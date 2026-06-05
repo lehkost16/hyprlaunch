@@ -4,7 +4,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-pub fn launch_app(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
+pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
     let path = match find_desktop_file(&app.desktop) {
         Some(p) => p,
         None => {
@@ -62,21 +62,31 @@ pub fn launch_app(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
         .stderr(std::process::Stdio::null())
         .spawn()?;
     
-    if let Some(delay) = app.delay_ms {
-        if delay > 0 {
-            println!("Waiting for {}ms...", delay);
-            thread::sleep(Duration::from_millis(delay));
-        }
-    }
-    
     Ok(())
 }
 
 pub fn launch_profile(apps: &[ProfileApp]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut handles = Vec::new();
+    
     for app in apps {
-        if let Err(e) = launch_app(app) {
-            eprintln!("Error launching {}: {}", app.desktop, e);
-        }
+        let app = app.clone();
+        let handle = thread::spawn(move || {
+            if let Some(delay) = app.delay_ms {
+                if delay > 0 {
+                    println!("Scheduling {} launch with {}ms delay...", app.desktop, delay);
+                    thread::sleep(Duration::from_millis(delay));
+                }
+            }
+            if let Err(e) = launch_app_now(&app) {
+                eprintln!("Error launching {}: {}", app.desktop, e);
+            }
+        });
+        handles.push(handle);
     }
+    
+    for handle in handles {
+        let _ = handle.join();
+    }
+    
     Ok(())
 }
