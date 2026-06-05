@@ -219,10 +219,18 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .delay_ms
                             .map(|d| format!(" | Delay: {}ms", d))
                             .unwrap_or_else(|| "".to_string());
+                        
+                        let exists = crate::desktop::find_desktop_file(&app.desktop).is_some();
+                        let (prefix, style) = if exists {
+                            ("  ", Style::default())
+                        } else {
+                            ("⚠️ ", Style::default().fg(Color::Yellow))
+                        };
+
                         ListItem::new(format!(
-                            "{}   ({}{}{})",
-                            app.desktop, ws_str, silent_str, delay_str
-                        ))
+                            "{}{}   ({}{}{})",
+                            prefix, app.desktop, ws_str, silent_str, delay_str
+                        )).style(style)
                     })
                     .collect();
 
