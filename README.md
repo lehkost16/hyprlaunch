@@ -1,166 +1,161 @@
-# Hyprsession
-## Overview
-Implements session persistence for Hyprland. While the program is running it periodically saves the command, workspace and other properties of running clients found by `hyprctl clients`. These are then saved to a file formatted as a Hyprland config file which can then be sourced so that the session is restored when Hyprland is restarted.
+# hypr-quicklaunch
 
-<a href="https://www.buymeacoffee.com/joshurtree" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-red.png" alt="Buy Me A Coffee" height="41" width="174"></a>
+`hypr-quicklaunch` is a simple, profile-based application launcher for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive terminal user interface (TUI) to define, configure, and reorder groups of applications ("profiles") that you want to launch together.
+
+Unlike state-restoring session managers, `hypr-quicklaunch` lets you manually organize workspace mappings, startup delays, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps).
+
+---
+
+## Features
+
+- **Interactive TUI Configurator**: Quickly create and edit profiles and associate them with applications.
+- **Auto-Detect System Desktop Entries**: Scans your local and system applications (`/usr/share/applications` and `~/.local/share/applications`), offering search-as-you-type to easily add programs.
+- **Workspace Mapping**: Assign applications to launch on specific Hyprland workspaces (e.g. `1`, `2`, or `silent`).
+- **Launch Delays**: Configure specific delays in milliseconds (`delay_ms`) between application launches to avoid race conditions and resource spikes.
+- **Silent Launching**: Use the Hyprland `silent` execution flag to load applications in the background without stealing active window focus.
+- **Startup Order Control**: Reorder execution sequences directly inside the TUI.
+- **Flexible Launching**: Seamlessly integrates with Hyprland's startup config or keybindings.
+
+---
 
 ## Installation
-#### Manual
-As root run the command 
-```
-cargo install --root /usr/local hyprsession
-``` 
-Or install as a user by replacing `/usr/local` with your home directory. 
 
-#### Arch Linux
-Hyprsession can be installed via the AUR. By either running your aur package manager of choice or manually by running
-```
-git clone https://aur.archlinux.org/hyprsession.git
-cd hyprsession
-makepkg -i
-```
-#### NixOS
-Add the input to your `flake.nix`
-```
-hyprsession.url = "github:joshurtree/hyprsession"
+### Prerequisites
+Make sure you have Rust and Cargo installed. You also need to be running a Hyprland session to dispatch the launches.
+
+### Build from Source
+Clone the repository and build the binary:
+```bash
+git clone https://github.com/lehkost16/hypr-quicklaunch.git
+cd hypr-quicklaunch
+cargo build --release
 ```
 
-Then either add the package to your `configuration.nix` or use `${inputs.hyprsession.packages.${pkgs.system}.hyprsession}/bin/hyprsession` in place of `hyprsession` to run the program.
+The compiled binary will be located at `target/release/hypr-quicklaunch`. You can move it to a folder in your `PATH` (such as `/usr/local/bin` or `~/.local/bin/`).
+
+---
 
 ## Usage
-To automatically run the program in future sessions add the following line to your Hyprland config file (Usually at ~/.config/hypr/hyprland.conf)
-```
-exec-once = hyprsession
-```
-The same line can be added to your `home.nix` hyprland configuration if your are using Nix Home Manager.
-If you want to save a session that is already running then run
-```
-hyprsession save <session-name>
-```
 
-## Options
-Various options can be used to modify the behavior of Hyprsession.
+`hypr-quicklaunch` behaves contextually depending on how it is executed:
 
-### [mode]
-One of
-* default - Loads the session at startup the saves the current session at regular intervals.
-* load - Load the session given by name (clears current session first)
-* save - Save the current session 
-* clear - Clear the current session (removes all windows)
-* list - List all available sessions
-* delete - Delete a session
-* command - Create a command to deal with edge cases (see below)
- 
-### [name]
-Name of the session or command
-
-### [command]
-Command to run (see below) 
-
-### -l, --load-time <load_time>
-The period of time after loading a session that windows are modified to match virtual counterparts
-
-### -i, --save-interval <save_interval>
-This sets the interval in seconds between session saves. The default is 60 seconds.
-
-### --simulate
-Only simulate loading and clearing of sessions
-
-### --adjust-clients-only
-When loading a session this tell Hyprsession to not clear the current session and restart programs. 
-Instead it moves the existing clients to match the saved session.
-
-### --mode <mode> (depreciated)
-Sets the mode the program runs in 
-* Default - Loads the session at startup the saves the current session at regular intervals.
-* SaveOnly - As above but skips loading the session
-* LoadAndExit - Load the saved session then immediately exit
-* SaveAndExit - Save the current session then exit
-
-### -h, --help
-Display program help
-
-### -v, --version
-Display program version
-
-## Command detection and bridge commands
-Detecting what command is needed to create any given window in wayland does not have a single uniform solution.
-The information within the `/proc` directory is used to try and find this. If this doesn't yield a command available 
-via $PATH then the `initial_class` of the window is checked followed by `initial_title`.  
-
-With applications that come in the form of Flatpaks, Snaps or Electron apps this method does not produce a proper result. 
-To solve this requires the use of bridge commands. By running `hyprctl clients` you can find the `initial_class` of the window. You can then create a bridging command to run the correct command on startup. For example if you use the Firefox flatpak then running
-```
-hyprsession command firefox "flatpak run org.mozilla.firefox"
-```
-creates a script in the `~/.local/bin` directory that runs the correct command.
-
-## Change log
-### 0.1.1
-* Changed --session-path option to point at base directory of session file
-### 0.1.2
-* Fixed bug which would crash program if no session file existed
-### 0.1.3
-* Fix fatal bug on Hyprland 0.4 that crashed the program while saving the session  
-### 0.1.4
-* Changed fullscreen dispatcher to use fullscreenmode and fixed FullscreenMode type issue (#2)
-* Updated to latest alpha version of hyprland crate. Fixes panic on fetching clients (#1)
-### 0.1.5
-* Skip saving clients with duplicate pids (i.e. generated by the same application)
-* Add option to retain clients with duplicate pids
-### 0.1.6
-* Handle special workspaces properly
-* Handle wrapped programs in Nixos
-### 0.2.0
-* Breaking change: Remove the need to use '--mode' to specify what mode to launch the program in
-* Introduce named sessions
-* Improve method of finding originating command for clients
-* Track client creation to try and better place them
-* Introduce bridge command functionality to deal with programs complicated launch patterns (flatpak, snap etc.)
-* Refactor code to allow potential future use as either standalone or as a client
-### 0.2.1
-* Fix faulty post client creation logic
-* Cleanup and properly document parameters
-* Add parameter documentation test
-* Use .desktop files to help find correct command
-
-## Future development
-The original intention for this project was to replicate the experience I had in KDE where most my programs would return after I switched on
-my computer. This with this update (0.2.1) it seems to be able to do that but the way it is achieved is somewhat hacky. 
-The problem is that the Hyprland dispatcher/event system is oriented around user interaction. This is particularly apparent with application 
-grouping that has dispatchers for adding applications to a group on the left or right. For a user this is easy but the program does know 
-its left from right, so I have to program that logic in as well and any method could be easily broken by edge cases or future Hyprland updates.
-
-The plan going forward is to concentrate on porting the code to a Hyprland plugin. This should give me low level access to client positioning
-needed to maintain the session in a cleaner manner and access new features without relying on a dispatcher being created to perform the task. 
-The intention is the maintain the standalone program and fix any bugs that found. It will also become the cli frontend of the plugin. I am
-not planning to add any further features to `hyprsession`. Instead enhancements such as grouping applications will come via the plugin.
-
-## Development
-### Running Tests
-Along side the standard tests you can create a test within a vm using nix by running 
+### Interactive mode (TUI)
+Run without arguments inside a terminal to launch the setup and management TUI:
 ```bash
-cd tests/vm-test
-./run-test.sh
+hypr-quicklaunch
+```
+Alternatively, you can force the TUI to open:
+```bash
+hypr-quicklaunch tui
 ```
 
-This will:
-1. Build a NixOS VM with Hyprland and hyprsession
-2. Start test applications (Firefox, terminal, calculator, etc.)
-3. Save a session with `hyprsession save`
-4. Clear the workspace and restore with `hyprsession load`  
-5. Compare before/after states and report results
+#### TUI Keyboard Shortcuts
+- **Profile Navigation**:
+  - `Up` / `Down` or `k` / `j`: Navigate profiles list
+  - `Enter`: Set the selected profile as active and launch it
+  - `c`: Create a new profile
+  - `d`: Delete the selected profile
+  - `Tab` / `Right` / `l`: Switch pane to edit applications in the selected profile
+  - `q` / `Esc`: Quit the application
+- **Application Navigation (Right Pane)**:
+  - `Tab` / `Left` / `h`: Switch back to the profile list
+  - `a`: Add a new application to the profile (opens a search overlay of system applications)
+  - `d` / `Delete`: Remove the selected application from the profile
+  - `w`: Set targeted workspace rule (leave empty for default workspace behavior)
+  - `t`: Set startup delay in milliseconds (e.g., `500` ms)
+  - `s`: Toggle launcher silent execution (`[Silent]` flag)
+  - `Shift+Up` / `Shift+Down`: Move the selected application up or down in the startup sequence
 
-Test results are saved to `tests/test-results/` with detailed comparison data. The programs started can be changed by
-editing `tests/vm-test/exec.conf`
+---
 
-### Session location
-By default the sessions are saved to `~/.local/share/hyprsession`. For testing without disrupting your main instance you can set the variable `HYPRSESSION_PATH` variable in your shell before running the test version of the program. 
+### Non-Interactive mode
+If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hypr-quicklaunch` will automatically launch all applications registered under the **currently active profile** and then exit.
 
-## Thanks
+#### Launching specific profiles via CLI
+You can launch a specific profile by name directly from your terminal or shell scripts:
+```bash
+hypr-quicklaunch <profile_name>
+```
 
-Thank you to the following people for helping to improve this project
+#### List profiles
+Print all configured profiles (the active profile is highlighted):
+```bash
+hypr-quicklaunch list
+```
 
-* Tie C (ticia)
-* Isaac Hesslegrave (HeadedBranch)
-* Hornet (fsilly)
+---
+
+## Configuration File
+
+Your profiles and settings are stored in JSON format at:
+`~/.config/hypr-quicklaunch/config.json`
+
+### Environment Variable Override
+You can override the default config location by setting the `HYPR_QUICKLAUNCH_CONFIG` environment variable:
+```bash
+export HYPR_QUICKLAUNCH_CONFIG="$HOME/custom/path/config.json"
+```
+
+### Config Schema Example
+Here is how your `config.json` might look:
+```json
+{
+  "active_profile": "work",
+  "profiles": {
+    "default": [
+      {
+        "desktop": "firefox.desktop",
+        "workspace": "1",
+        "silent": false,
+        "delay_ms": 0
+      },
+      {
+        "desktop": "kitty.desktop",
+        "workspace": "2",
+        "silent": true,
+        "delay_ms": 300
+      }
+    ],
+    "work": [
+      {
+        "desktop": "slack.desktop",
+        "workspace": "3",
+        "silent": false,
+        "delay_ms": 500
+      },
+      {
+        "desktop": "org.codeberg.dnkl.foot.desktop",
+        "workspace": "1",
+        "silent": false,
+        "delay_ms": 0
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Integration with Hyprland
+
+To automatically launch your active profile when you log into Hyprland, add the following line to your `~/.config/hypr/hyprland.conf`:
+
+```ini
+exec-once = hypr-quicklaunch
+```
+
+You can also create keybindings to easily switch profiles:
+
+```ini
+# Switch to and launch the "gaming" profile
+bind = $mainMod, G, exec, hypr-quicklaunch gaming
+
+# Switch to and launch the "work" profile
+bind = $mainMod, W, exec, hypr-quicklaunch work
+```
+
+---
+
+## License
+
+This project is licensed under the GPL-3.0 License.

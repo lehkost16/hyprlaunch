@@ -1,28 +1,23 @@
 [package]
-name = "hyprsession"
+name = "hypr-quicklaunch"
 version = "0.2.1-1"
 edition = "2021"
 authors = [ "Josh Andrews" ]
 license = "GPL-3.0"
-description = "Saves hyprland sessions"
+description = "A simple, profile-based application launcher for Hyprland"
 readme = "README.md"
-repository = "https://github.com/joshurtree/hyprsession"
-keywords = [ "hyprland", "session", "tools" ]
+repository = "https://github.com/lehkost16/hypr-quicklaunch"
+keywords = [ "hyprland", "profile", "launcher", "tui" ]
 
 [dependencies]
-clap = { version = "4.5.16", features = ["derive"] }
-hyprland = "0.4.0-beta.3"
-regex = "1.12.2"
 serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.127"
+ratatui = "0.26"
+crossterm = "0.27"
 
 [dev-dependencies]
 tempfile = "3.8"
 
 [[bin]]
-name = "hyprsession"
-path = "src/main.rs"
-
-[lib]
-name = "hyprsession"
-path = "src/lib.rs" 
+name = "hypr-quicklaunch"
+path = "src/main.rs" 

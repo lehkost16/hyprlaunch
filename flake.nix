@@ -1,5 +1,5 @@
 {
-  description = "Hyprsession: A session saver for Hyprland";
+  description = "hypr-quicklaunch: A simple, profile-based application launcher for Hyprland";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";

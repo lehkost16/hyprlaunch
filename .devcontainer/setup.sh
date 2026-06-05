@@ -2,7 +2,7 @@
 
 set -e
 
-echo "🚀 Setting up Hyprsession development environment..."
+echo "🚀 Setting up hypr-quicklaunch development environment..."
 
 # Install additional system dependencies
 echo "📦 Installing system dependencies..."
@@ -43,7 +43,7 @@ cargo fetch
 echo "⚙️ Setting up aliases..."
 cat >> ~/.bashrc << 'EOF'
 
-# Hyprsession development aliases
+# hypr-quicklaunch development aliases
 alias cr='cargo run'
 alias cb='cargo build'
 alias ct='cargo test'

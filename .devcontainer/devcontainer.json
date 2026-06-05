@@ -1,5 +1,5 @@
 {
-  "name": "Hyprsession Rust Development",
+  "name": "hypr-quicklaunch Rust Development",
   "image": "mcr.microsoft.com/devcontainers/rust:1-1-bullseye",
   
   // Features to add to the dev container
@@ -66,6 +66,6 @@
 
   // Mount cargo registry for faster builds
   "mounts": [
-    "source=hyprsession-cargo-registry,target=/usr/local/cargo/registry,type=volume"
+    "source=hypr-quicklaunch-cargo-registry,target=/usr/local/cargo/registry,type=volume"
   ]
 }

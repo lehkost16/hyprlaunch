@@ -4,15 +4,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug hyprsession",
+            "name": "Debug hypr-quicklaunch",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=hyprsession",
-                    "--package=hyprsession"
+                    "--bin=hypr-quicklaunch",
+                    "--package=hypr-quicklaunch"
                 ],
                 "filter": {
-                    "name": "hyprsession",
+                    "name": "hypr-quicklaunch",
                     "kind": "bin"
                 }
             },
@@ -25,15 +25,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug hyprsession with args",
+            "name": "Debug hypr-quicklaunch with args",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=hyprsession",
-                    "--package=hyprsession"
+                    "--bin=hypr-quicklaunch",
+                    "--package=hypr-quicklaunch"
                 ],
                 "filter": {
-                    "name": "hyprsession",
+                    "name": "hypr-quicklaunch",
                     "kind": "bin"
                 }
             },
@@ -51,11 +51,11 @@
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=hyprsession",
-                    "--package=hyprsession"
+                    "--bin=hypr-quicklaunch",
+                    "--package=hypr-quicklaunch"
                 ],
                 "filter": {
-                    "name": "hyprsession",
+                    "name": "hypr-quicklaunch",
                     "kind": "bin"
                 }
             },
