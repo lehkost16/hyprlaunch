@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopEntry {
     pub filename: String,
+    pub file_path: std::path::PathBuf,
     pub name: String,
     pub exec: Vec<String>,
     pub path: Option<String>,
@@ -158,6 +159,7 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
     
     Some(DesktopEntry {
         filename,
+        file_path: file_path.to_path_buf(),
         name: name_str,
         exec: exec_args,
         path: path.filter(|s| !s.is_empty()),
