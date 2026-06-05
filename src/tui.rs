@@ -231,11 +231,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .map(|d| format!(" | Delay: {}ms", d))
                             .unwrap_or_else(|| "".to_string());
                         
-                        let (desktop_display, exists) = if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
-                            (entry.file_path.to_string_lossy().into_owned(), true)
-                        } else {
-                            (app.desktop.clone(), false)
-                        };
+                        let exists = all_desktop_apps.iter().any(|e| e.filename == app.desktop);
                         let (prefix, style) = if exists {
                             ("  ", Style::default())
                         } else {
@@ -244,7 +240,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
                         ListItem::new(format!(
                             "{}{}   ({}{}{})",
-                            prefix, desktop_display, ws_str, silent_str, delay_str
+                            prefix, app.desktop, ws_str, silent_str, delay_str
                         )).style(style)
                     })
                     .collect();
@@ -405,7 +401,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let items: Vec<ListItem> = filtered
                         .iter()
                         .map(|entry| {
-                            ListItem::new(format!("{}   [{}]", entry.name, entry.file_path.to_string_lossy()))
+                            ListItem::new(format!("{}   [{}]", entry.name, entry.filename))
                         })
                         .collect();
 
