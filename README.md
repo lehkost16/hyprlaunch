@@ -1,8 +1,8 @@
-# hypr-quicklaunch
+# hyprlaunch
 
-`hypr-quicklaunch` is a simple, profile-based application launcher for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive terminal user interface (TUI) to define, configure, and reorder groups of applications ("profiles") that you want to launch together.
+`hyprlaunch` is a simple, profile-based application launcher for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive terminal user interface (TUI) to define, configure, and reorder groups of applications ("profiles") that you want to launch together.
 
-Unlike state-restoring session managers, `hypr-quicklaunch` lets you manually organize workspace mappings, startup delays, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps).
+Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mappings, startup delays, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps).
 
 ---
 
@@ -26,27 +26,27 @@ Make sure you have Rust and Cargo installed. You also need to be running a Hyprl
 ### Build from Source
 Clone the repository and build the binary:
 ```bash
-git clone https://github.com/lehkost16/hypr-quicklaunch.git
-cd hypr-quicklaunch
+git clone https://github.com/lehkost16/hyprlaunch.git
+cd hyprlaunch
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/hypr-quicklaunch`. You can move it to a folder in your `PATH` (such as `/usr/local/bin` or `~/.local/bin/`).
+The compiled binary will be located at `target/release/hyprlaunch`. You can move it to a folder in your `PATH` (such as `/usr/local/bin` or `~/.local/bin/`).
 
 ---
 
 ## Usage
 
-`hypr-quicklaunch` behaves contextually depending on how it is executed:
+`hyprlaunch` behaves contextually depending on how it is executed:
 
 ### Interactive mode (TUI)
 Run without arguments inside a terminal to launch the setup and management TUI:
 ```bash
-hypr-quicklaunch
+hyprlaunch
 ```
 Alternatively, you can force the TUI to open:
 ```bash
-hypr-quicklaunch tui
+hyprlaunch tui
 ```
 
 #### TUI Keyboard Shortcuts
@@ -69,18 +69,18 @@ hypr-quicklaunch tui
 ---
 
 ### Non-Interactive mode
-If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hypr-quicklaunch` will automatically launch all applications registered under the **currently active profile** and then exit.
+If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hyprlaunch` will automatically launch all applications registered under the **currently active profile** and then exit.
 
 #### Launching specific profiles via CLI
 You can launch a specific profile by name directly from your terminal or shell scripts:
 ```bash
-hypr-quicklaunch <profile_name>
+hyprlaunch <profile_name>
 ```
 
 #### List profiles
 Print all configured profiles (the active profile is highlighted):
 ```bash
-hypr-quicklaunch list
+hyprlaunch list
 ```
 
 ---
@@ -88,12 +88,12 @@ hypr-quicklaunch list
 ## Configuration File
 
 Your profiles and settings are stored in JSON format at:
-`~/.config/hypr-quicklaunch/config.json`
+`~/.config/hyprlaunch/config.json`
 
 ### Environment Variable Override
-You can override the default config location by setting the `HYPR_QUICKLAUNCH_CONFIG` environment variable:
+You can override the default config location by setting the `HYPRLAUNCH_CONFIG` environment variable:
 ```bash
-export HYPR_QUICKLAUNCH_CONFIG="$HOME/custom/path/config.json"
+export HYPRLAUNCH_CONFIG="$HOME/custom/path/config.json"
 ```
 
 ### Config Schema Example
@@ -141,17 +141,17 @@ Here is how your `config.json` might look:
 To automatically launch your active profile when you log into Hyprland, add the following line to your `~/.config/hypr/hyprland.conf`:
 
 ```ini
-exec-once = hypr-quicklaunch
+exec-once = hyprlaunch
 ```
 
 You can also create keybindings to easily switch profiles:
 
 ```ini
 # Switch to and launch the "gaming" profile
-bind = $mainMod, G, exec, hypr-quicklaunch gaming
+bind = $mainMod, G, exec, hyprlaunch gaming
 
 # Switch to and launch the "work" profile
-bind = $mainMod, W, exec, hypr-quicklaunch work
+bind = $mainMod, W, exec, hyprlaunch work
 ```
 
 ---

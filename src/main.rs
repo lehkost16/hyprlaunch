@@ -7,15 +7,15 @@ pub mod launcher;
 pub mod tui;
 
 fn print_help() {
-    println!("hypr-quicklaunch - A simple, profile-based application launcher for Hyprland");
+    println!("hyprlaunch - A simple, profile-based application launcher for Hyprland");
     println!();
     println!("Usage:");
-    println!("  hypr-quicklaunch                 Open the interactive configuration TUI (if in terminal)");
-    println!("                                   or launch the active profile (if non-interactive)");
-    println!("  hypr-quicklaunch tui             Explicitly open the configuration TUI");
-    println!("  hypr-quicklaunch list            List all available profile names");
-    println!("  hypr-quicklaunch <profile_name>  Launch applications for the specified profile");
-    println!("  hypr-quicklaunch --help | -h     Print this help message");
+    println!("  hyprlaunch                 Open the interactive configuration TUI (if in terminal)");
+    println!("                             or launch the active profile (if non-interactive)");
+    println!("  hyprlaunch tui             Explicitly open the configuration TUI");
+    println!("  hyprlaunch list            List all available profile names");
+    println!("  hyprlaunch <profile_name>  Launch applications for the specified profile");
+    println!("  hyprlaunch --help | -h     Print this help message");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

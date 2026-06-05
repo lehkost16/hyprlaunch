@@ -49,11 +49,11 @@ impl Default for Config {
 }
 
 pub fn get_config_path() -> PathBuf {
-    if let Ok(path_str) = std::env::var("HYPR_QUICKLAUNCH_CONFIG") {
+    if let Ok(path_str) = std::env::var("HYPRLAUNCH_CONFIG") {
         PathBuf::from(path_str)
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-        Path::new(&home).join(".config/hypr-quicklaunch/config.json")
+        Path::new(&home).join(".config/hyprlaunch/config.json")
     }
 }
 

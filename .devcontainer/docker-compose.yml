@@ -1,13 +1,13 @@
 version: '3.8'
 
 services:
-  hypr-quicklaunch-dev:
+  hyprlaunch-dev:
     build:
       context: .
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/workspace:cached
-      - hypr-quicklaunch-cargo-registry:/usr/local/cargo/registry
+      - hyprlaunch-cargo-registry:/usr/local/cargo/registry
     working_dir: /workspace
     environment:
       - RUST_BACKTRACE=1
@@ -19,4 +19,4 @@ services:
     command: sleep infinity
 
 volumes:
-  hypr-quicklaunch-cargo-registry:
+  hyprlaunch-cargo-registry:

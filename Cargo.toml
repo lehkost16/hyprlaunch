@@ -1,12 +1,12 @@
 [package]
-name = "hypr-quicklaunch"
+name = "hyprlaunch"
 version = "0.2.1-1"
 edition = "2021"
 authors = [ "Josh Andrews" ]
 license = "GPL-3.0"
 description = "A simple, profile-based application launcher for Hyprland"
 readme = "README.md"
-repository = "https://github.com/lehkost16/hypr-quicklaunch"
+repository = "https://github.com/lehkost16/hyprlaunch"
 keywords = [ "hyprland", "profile", "launcher", "tui" ]
 
 [dependencies]
@@ -19,5 +19,5 @@ crossterm = "0.27"
 tempfile = "3.8"
 
 [[bin]]
-name = "hypr-quicklaunch"
+name = "hyprlaunch"
 path = "src/main.rs" 
