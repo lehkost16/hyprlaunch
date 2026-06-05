@@ -90,10 +90,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
     let mut profile_list_state = ListState::default();
     let mut app_list_state = ListState::default();
 
-    // Running status cache and throttle timer
-    let mut running_status_cache = std::collections::HashMap::new();
-    let mut last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
-
     // Select default profile
     let mut profiles: Vec<String> = config.profiles.keys().cloned().collect();
     profiles.sort();
@@ -121,19 +117,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             .and_then(|name| config.profiles.get(name))
             .cloned()
             .unwrap_or_default();
-
-        // Throttle pgrep status checks to run at most once every 1.5 seconds
-        let now = std::time::Instant::now();
-        if now.duration_since(last_status_check) >= std::time::Duration::from_millis(1500) {
-            running_status_cache.clear();
-            for app in &current_apps {
-                if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
-                    let running = crate::launcher::is_app_running(entry);
-                    running_status_cache.insert(app.desktop.clone(), running);
-                }
-            }
-            last_status_check = now;
-        }
 
         // Ensure selection bounds
         if profile_list_state.selected().is_some() && current_profiles.is_empty() {
@@ -249,13 +232,10 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .unwrap_or_else(|| "".to_string());
                         
                         let exists = all_desktop_apps.iter().any(|e| e.filename == app.desktop);
-                        let is_running = running_status_cache.get(&app.desktop).copied().unwrap_or(false);
-                        let (prefix, style) = if !exists {
-                            ("⚠️ ", Style::default().fg(Color::Yellow))
-                        } else if is_running {
-                            ("● ", Style::default().fg(Color::Green))
+                        let (prefix, style) = if exists {
+                            ("  ", Style::default())
                         } else {
-                            ("○ ", Style::default().fg(Color::DarkGray))
+                            ("⚠️ ", Style::default().fg(Color::Yellow))
                         };
 
                         ListItem::new(format!(
@@ -293,13 +273,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             if let (Some(apps), Some(idx)) = (selected_p_name.as_ref().and_then(|n| config.profiles.get(n)), app_list_state.selected()) {
                 if let Some(app) = apps.get(idx) {
                     if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
-                        let is_running = running_status_cache.get(&app.desktop).copied().unwrap_or(false);
-                        let status_span = if is_running {
-                            Span::styled("Running", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-                        } else {
-                            Span::styled("Stopped", Style::default().fg(Color::DarkGray))
-                        };
-                        
                         let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
                         let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
                         let delay_str = app.delay_ms.map(|d| format!("{} ms", d)).unwrap_or_else(|| "0 ms".to_string());
@@ -313,7 +286,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
                         details_lines.push(Line::from(vec![Span::raw(" Delay:        "), Span::raw(delay_str)]));
                         details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
-                        details_lines.push(Line::from(vec![Span::raw(" Status:       "), status_span]));
                     } else {
                         details_lines.push(Line::from(vec![Span::styled(format!(" ⚠️ Unknown Application ({})", app.desktop), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]));
                         details_lines.push(Line::from(vec![Span::raw(" Warning:      Desktop file not found on the system.")]));
@@ -471,8 +443,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     if let Some(selected) = profile_list_state.selected() {
                                         if selected > 0 {
                                             profile_list_state.select(Some(selected - 1));
-                                            // Force immediate running status reload
-                                            last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
                                         }
                                     }
                                 }
@@ -480,8 +450,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     if let Some(selected) = profile_list_state.selected() {
                                         if selected + 1 < current_profiles.len() {
                                             profile_list_state.select(Some(selected + 1));
-                                            // Force immediate running status reload
-                                            last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
                                         }
                                     }
                                 }
