@@ -1,8 +1,48 @@
 use crate::config::ProfileApp;
-use crate::desktop::{find_desktop_file, parse_desktop_file};
+use crate::desktop::{find_desktop_file, parse_desktop_file, DesktopEntry};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use std::path::Path;
+
+pub fn is_app_running(entry: &DesktopEntry) -> bool {
+    if entry.exec.is_empty() {
+        return false;
+    }
+    
+    let bin = &entry.exec[0];
+    let basename = Path::new(bin)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(bin);
+        
+    if basename == "flatpak" && entry.exec.len() > 1 {
+        // For flatpak, look for the app ID in the command line (e.g., flatpak run org.foo.bar)
+        let app_id = entry.exec.iter()
+            .find(|arg| arg.contains('.') && !arg.starts_with('-'))
+            .cloned()
+            .unwrap_or_else(|| entry.exec[entry.exec.len() - 1].clone());
+            
+        let status = Command::new("pgrep")
+            .arg("-f")
+            .arg(&app_id)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+            
+        return status.map(|s| s.success()).unwrap_or(false);
+    }
+    
+    // Default check: pgrep -x <basename>
+    let status = Command::new("pgrep")
+        .arg("-x")
+        .arg(basename)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+        
+    status.map(|s| s.success()).unwrap_or(false)
+}
 
 pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
     let path = match find_desktop_file(&app.desktop) {
@@ -18,6 +58,11 @@ pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>
             return Err(format!("Failed to parse desktop file at: {:?}", path).into());
         }
     };
+    
+    if is_app_running(&entry) {
+        println!("Application '{}' (from {}) is already running. Skipping launch.", entry.name, app.desktop);
+        return Ok(());
+    }
     
     if entry.exec.is_empty() {
         return Err("Desktop file has an empty Exec command".into());
