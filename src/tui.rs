@@ -12,6 +12,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    text::{Line, Span},
     Terminal,
 };
 use std::io;
@@ -24,6 +25,10 @@ enum ActivePane {
 enum AppState {
     Main,
     NewProfilePrompt {
+        input: String,
+    },
+    RenameProfilePrompt {
+        old_name: String,
         input: String,
     },
     AddAppSearch {
@@ -85,6 +90,10 @@ fn run_event_loop<B: ratatui::backend::Backend>(
     let mut profile_list_state = ListState::default();
     let mut app_list_state = ListState::default();
 
+    // Running status cache and throttle timer
+    let mut running_status_cache = std::collections::HashMap::new();
+    let mut last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+
     // Select default profile
     let mut profiles: Vec<String> = config.profiles.keys().cloned().collect();
     profiles.sort();
@@ -112,6 +121,19 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             .and_then(|name| config.profiles.get(name))
             .cloned()
             .unwrap_or_default();
+
+        // Throttle pgrep status checks to run at most once every 1.5 seconds
+        let now = std::time::Instant::now();
+        if now.duration_since(last_status_check) >= std::time::Duration::from_millis(1500) {
+            running_status_cache.clear();
+            for app in &current_apps {
+                if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
+                    let running = crate::launcher::is_app_running(entry);
+                    running_status_cache.insert(app.desktop.clone(), running);
+                }
+            }
+            last_status_check = now;
+        }
 
         // Ensure selection bounds
         if profile_list_state.selected().is_some() && current_profiles.is_empty() {
@@ -180,6 +202,12 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
             f.render_stateful_widget(profile_list, body_chunks[0], &mut profile_list_state);
 
+            // Right Pane Layout: Split vertically into App List and App Details
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(body_chunks[1]);
+
             // Right Pane: Profile Detail (Apps)
             let right_border_style = match active_pane {
                 ActivePane::Apps => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -200,7 +228,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .border_style(right_border_style),
                     )
                     .style(Style::default().fg(Color::DarkGray));
-                f.render_widget(placeholder, body_chunks[1]);
+                f.render_widget(placeholder, right_chunks[0]);
             } else {
                 let app_items: Vec<ListItem> = current_apps_clone
                     .iter()
@@ -220,11 +248,14 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .map(|d| format!(" | Delay: {}ms", d))
                             .unwrap_or_else(|| "".to_string());
                         
-                        let exists = crate::desktop::find_desktop_file(&app.desktop).is_some();
-                        let (prefix, style) = if exists {
-                            ("  ", Style::default())
-                        } else {
+                        let exists = all_desktop_apps.iter().any(|e| e.filename == app.desktop);
+                        let is_running = running_status_cache.get(&app.desktop).copied().unwrap_or(false);
+                        let (prefix, style) = if !exists {
                             ("⚠️ ", Style::default().fg(Color::Yellow))
+                        } else if is_running {
+                            ("● ", Style::default().fg(Color::Green))
+                        } else {
+                            ("○ ", Style::default().fg(Color::DarkGray))
                         };
 
                         ListItem::new(format!(
@@ -249,13 +280,59 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     )
                     .highlight_symbol("> ");
 
-                f.render_stateful_widget(app_list, body_chunks[1], &mut app_list_state);
+                f.render_stateful_widget(app_list, right_chunks[0], &mut app_list_state);
             }
+
+            // Render App Details in right_chunks[1]
+            let details_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Application Details ")
+                .border_style(Style::default().fg(Color::DarkGray));
+                
+            let mut details_lines = Vec::new();
+            if let (Some(apps), Some(idx)) = (selected_p_name.as_ref().and_then(|n| config.profiles.get(n)), app_list_state.selected()) {
+                if let Some(app) = apps.get(idx) {
+                    if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
+                        let is_running = running_status_cache.get(&app.desktop).copied().unwrap_or(false);
+                        let status_span = if is_running {
+                            Span::styled("Running", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                        } else {
+                            Span::styled("Stopped", Style::default().fg(Color::DarkGray))
+                        };
+                        
+                        let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
+                        let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
+                        let delay_str = app.delay_ms.map(|d| format!("{} ms", d)).unwrap_or_else(|| "0 ms".to_string());
+                        let exec_str = entry.exec.join(" ");
+                        let path_str = entry.path.as_deref().unwrap_or("None");
+                        
+                        details_lines.push(Line::from(vec![Span::raw(" Name:         "), Span::styled(&entry.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Desktop File: "), Span::raw(&entry.filename)]));
+                        details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(exec_str, Style::default().fg(Color::Cyan))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(path_str)]));
+                        details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Delay:        "), Span::raw(delay_str)]));
+                        details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
+                        details_lines.push(Line::from(vec![Span::raw(" Status:       "), status_span]));
+                    } else {
+                        details_lines.push(Line::from(vec![Span::styled(format!(" ⚠️ Unknown Application ({})", app.desktop), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Warning:      Desktop file not found on the system.")]));
+                    }
+                } else {
+                    details_lines.push(Line::from(" No application selected."));
+                }
+            } else {
+                details_lines.push(Line::from(" Select an application to view details."));
+            };
+            
+            let details_paragraph = Paragraph::new(details_lines)
+                .block(details_block);
+            f.render_widget(details_paragraph, right_chunks[1]);
 
             // Bottom Help Pane
             let help_text = match active_pane {
                 ActivePane::Profiles => {
-                    "Enter: Launch | c: Create Profile | d: Delete Profile | Tab: Edit Apps | q: Quit"
+                    "Enter: Launch | c: Create | r: Rename | d: Delete | Tab: Edit Apps | q: Quit"
                 }
                 ActivePane::Apps => {
                     "Tab: Back | a: Add App | d: Delete App | w: Workspace | s: Toggle Silent | t: Delay | Shift+Up/Down: Move"
@@ -275,6 +352,18 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Create New Profile ")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        );
+                    f.render_widget(input_block, popup_area);
+                }
+                AppState::RenameProfilePrompt { input, .. } => {
+                    let popup_area = centered_rect(50, 20, size);
+                    f.render_widget(Clear, popup_area);
+                    let input_block = Paragraph::new(format!("\n  > {}", input))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Rename Profile ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
@@ -382,6 +471,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     if let Some(selected) = profile_list_state.selected() {
                                         if selected > 0 {
                                             profile_list_state.select(Some(selected - 1));
+                                            // Force immediate running status reload
+                                            last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
                                         }
                                     }
                                 }
@@ -389,6 +480,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     if let Some(selected) = profile_list_state.selected() {
                                         if selected + 1 < current_profiles.len() {
                                             profile_list_state.select(Some(selected + 1));
+                                            // Force immediate running status reload
+                                            last_status_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
                                         }
                                     }
                                 }
@@ -396,6 +489,14 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     state = AppState::NewProfilePrompt {
                                         input: String::new(),
                                     };
+                                }
+                                KeyCode::Char('r') => {
+                                    if let Some(p_name) = &selected_profile_name {
+                                        state = AppState::RenameProfilePrompt {
+                                            old_name: p_name.clone(),
+                                            input: p_name.clone(),
+                                        };
+                                    }
                                 }
                                 KeyCode::Char('d') | KeyCode::Delete => {
                                     if let Some(p_name) = &selected_profile_name {
@@ -548,6 +649,38 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 p.sort();
                                 if let Some(pos) = p.iter().position(|name| name == trimmed) {
                                     profile_list_state.select(Some(pos));
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            input.push(c);
+                        }
+                        _ => {}
+                    },
+                    AppState::RenameProfilePrompt { old_name, input } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Enter => {
+                            let trimmed = input.trim();
+                            if !trimmed.is_empty() && trimmed != old_name {
+                                if let Some(apps) = config.profiles.remove(old_name) {
+                                    config.profiles.insert(trimmed.to_string(), apps);
+                                    if config.active_profile == *old_name {
+                                        config.active_profile = trimmed.to_string();
+                                    }
+                                    let _ = save_config(config);
+                                    
+                                    // Reset selection to renamed profile
+                                    let mut p: Vec<String> = config.profiles.keys().cloned().collect();
+                                    p.sort();
+                                    if let Some(pos) = p.iter().position(|name| name == trimmed) {
+                                        profile_list_state.select(Some(pos));
+                                    }
                                 }
                             }
                             state = AppState::Main;
