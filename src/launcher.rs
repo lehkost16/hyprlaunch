@@ -193,10 +193,9 @@ pub fn run_script_step(command: &str, dir: Option<&str>) -> Result<(), Box<dyn s
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(format!("Command exited with status: {:?}", status.code()).into());
-    }
+    cmd.stdout(std::process::Stdio::null())
+       .stderr(std::process::Stdio::null())
+       .spawn()?;
     Ok(())
 }
 
