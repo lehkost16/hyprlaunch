@@ -2,18 +2,20 @@
 
 `hyprlaunch` is a simple, profile-based application launcher for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive terminal user interface (TUI) to define, configure, and reorder groups of applications ("profiles") that you want to launch together.
 
-Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mappings, startup delays, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps).
+Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mappings, custom shell scripts/commands, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps) and launch them concurrently.
 
 ---
 
 ## Features
 
-- **Interactive TUI Configurator**: Quickly create and edit profiles and associate them with applications.
+- **Interactive TUI Configurator**: Quickly create, clone, rename, and edit profiles and associate them with apps.
 - **Auto-Detect System Desktop Entries**: Scans your local and system applications (`/usr/share/applications` and `~/.local/share/applications`), offering search-as-you-type to easily add programs.
+- **Custom Commands & Scripts Support**: Add raw shell commands (e.g. `waybar` or a custom bash script) directly to profiles instead of only `.desktop` applications.
 - **Workspace Mapping**: Assign applications to launch on specific Hyprland workspaces (e.g. `1`, `2`, or `silent`).
-- **Launch Delays**: Configure specific delays in milliseconds (`delay_ms`) between application launches to avoid race conditions and resource spikes.
 - **Silent Launching**: Use the Hyprland `silent` execution flag to load applications in the background without stealing active window focus.
 - **Startup Order Control**: Reorder execution sequences directly inside the TUI.
+- **Test Launching**: Instantly test run individual applications or custom commands directly from the editor pane.
+- **Active Profile Selection**: Toggle your default active startup profile directly in the TUI sidebar.
 - **Flexible Launching**: Seamlessly integrates with Hyprland's startup config or keybindings.
 
 ---
@@ -50,26 +52,30 @@ hyprlaunch tui
 ```
 
 #### TUI Keyboard Shortcuts
-- **Profile Navigation**:
+- **Profile Navigation (Left Pane)**:
   - `Up` / `Down` or `k` / `j`: Navigate profiles list
-  - `Enter`: Set the selected profile as active and launch it
+  - `Space`: Set the selected profile as the default active startup profile (indicated by a `★`)
+  - `Enter`: Save and launch the selected profile immediately (exits TUI)
   - `c`: Create a new profile
+  - `r`: Rename the selected profile
+  - `y`: Duplicate/Clone the selected profile
   - `d`: Delete the selected profile
   - `Tab` / `Right` / `l`: Switch pane to edit applications in the selected profile
   - `q` / `Esc`: Quit the application
 - **Application Navigation (Right Pane)**:
   - `Tab` / `Left` / `h`: Switch back to the profile list
-  - `a`: Add a new application to the profile (opens a search overlay of system applications)
-  - `d` / `Delete`: Remove the selected application from the profile
+  - `a`: Add a new desktop application to the profile (opens a search overlay of system applications)
+  - `c`: Add a custom shell command or bash script to the profile
+  - `d` / `Delete`: Remove the selected application/command from the profile
   - `w`: Set targeted workspace rule (leave empty for default workspace behavior)
-  - `t`: Set startup delay in milliseconds (e.g., `500` ms)
   - `s`: Toggle launcher silent execution (`[Silent]` flag)
+  - `Enter`: Test launch only the selected application/command immediately in the background
   - `Shift+Up` / `Shift+Down`: Move the selected application up or down in the startup sequence
 
 ---
 
 ### Non-Interactive mode
-If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hyprlaunch` will automatically launch all applications registered under the **currently active profile** and then exit.
+If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hyprlaunch` will automatically launch all applications registered under the **currently active profile** (marked with `★`) and then exit.
 
 #### Launching specific profiles via CLI
 You can launch a specific profile by name directly from your terminal or shell scripts:
@@ -106,28 +112,29 @@ Here is how your `config.json` might look:
       {
         "desktop": "firefox.desktop",
         "workspace": "1",
-        "silent": false,
-        "delay_ms": 0
+        "silent": false
       },
       {
         "desktop": "kitty.desktop",
         "workspace": "2",
-        "silent": true,
-        "delay_ms": 300
+        "silent": true
       }
     ],
     "work": [
       {
         "desktop": "slack.desktop",
         "workspace": "3",
-        "silent": false,
-        "delay_ms": 500
+        "silent": false
+      },
+      {
+        "desktop": "waybar",
+        "workspace": null,
+        "silent": false
       },
       {
         "desktop": "org.codeberg.dnkl.foot.desktop",
         "workspace": "1",
-        "silent": false,
-        "delay_ms": 0
+        "silent": false
       }
     ]
   }
