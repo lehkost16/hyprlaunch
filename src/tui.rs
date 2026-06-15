@@ -44,6 +44,9 @@ enum AppState {
         selected_idx: usize,
         all_apps: Vec<DesktopEntry>,
     },
+    AddLaunchCommandPrompt {
+        input: String,
+    },
     AddCustomCommandPrompt {
         input: String,
     },
@@ -431,13 +434,14 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     f.render_widget(input_block, popup_area);
                 }
                 AppState::AddStepTypeSelector { selected_idx } => {
-                    let popup_area = centered_rect(50, 35, size);
+                    let popup_area = centered_rect(50, 38, size);
                     f.render_widget(Clear, popup_area);
                     let options = vec![
                         "1. Launch Desktop Application",
-                        "2. Run Custom Command / Script",
-                        "3. Wait / Delay (milliseconds)",
-                        "4. Send System Notification",
+                        "2. Launch Custom Window Command",
+                        "3. Run Custom Command / Script in Background",
+                        "4. Wait / Delay (milliseconds)",
+                        "5. Send System Notification",
                     ];
                     let items: Vec<ListItem> = options.iter().enumerate().map(|(i, opt)| {
                         let style = if i == *selected_idx {
@@ -456,6 +460,18 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 .border_style(Style::default().fg(Color::Yellow))
                         );
                     f.render_widget(list, popup_area);
+                }
+                AppState::AddLaunchCommandPrompt { input } => {
+                    let popup_area = centered_rect(60, 20, size);
+                    f.render_widget(Clear, popup_area);
+                    let input_block = Paragraph::new(format!("\n  Command: {}", input))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Add Custom Window Command ")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        );
+                    f.render_widget(input_block, popup_area);
                 }
                 AppState::AddCustomCommandPrompt { input } => {
                     let popup_area = centered_rect(60, 20, size);
@@ -1078,7 +1094,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             }
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            if *selected_idx < 3 {
+                            if *selected_idx < 4 {
                                 *selected_idx += 1;
                             }
                         }
@@ -1092,16 +1108,21 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     };
                                 }
                                 1 => {
-                                    state = AppState::AddCustomCommandPrompt {
+                                    state = AppState::AddLaunchCommandPrompt {
                                         input: String::new(),
                                     };
                                 }
                                 2 => {
-                                    state = AppState::AddWaitPrompt {
+                                    state = AppState::AddCustomCommandPrompt {
                                         input: String::new(),
                                     };
                                 }
                                 3 => {
+                                    state = AppState::AddWaitPrompt {
+                                        input: String::new(),
+                                    };
+                                }
+                                4 => {
                                     state = AppState::AddNotifyPrompt {
                                         title_input: String::new(),
                                         body_input: String::new(),
@@ -1110,6 +1131,40 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 }
                                 _ => {}
                             }
+                        }
+                        _ => {}
+                    },
+                    AppState::AddLaunchCommandPrompt { input } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Enter => {
+                            let trimmed = input.trim().to_string();
+                            if !trimmed.is_empty() {
+                                if let Some(w_name) = &selected_workflow_name {
+                                    let new_len = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps.push(WorkflowStep::Launch {
+                                            desktop: trimmed,
+                                            workspace: None,
+                                            silent: Some(false),
+                                            monitor_cond: None,
+                                        });
+                                        wf.steps.len()
+                                    } else {
+                                        1
+                                    };
+                                    let _ = save_config(config);
+                                    active_pane = ActivePane::Steps;
+                                    step_list_state.select(Some(new_len - 1));
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            input.push(c);
                         }
                         _ => {}
                     },
