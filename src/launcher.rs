@@ -177,7 +177,7 @@ pub fn launch_step(
         format!("hl.dsp.exec_cmd(\"{}\")", escaped_lua_cmd)
     };
 
-    println!("Launching {}: {}", entry.name, hypr_cmd);
+    println!("Launching {}...", entry.name);
     Command::new("hyprctl")
         .args(["dispatch", &hypr_cmd])
         .stdout(std::process::Stdio::null())
@@ -219,13 +219,16 @@ pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error
             launch_step(desktop, workspace.as_deref(), *silent, monitor_cond.as_deref())
         }
         WorkflowStep::RunScript { command, dir } => {
+            println!("Running custom command...");
             run_script_step(command, dir.as_deref())
         }
         WorkflowStep::Wait { ms } => {
+            println!("Waiting {}ms...", ms);
             wait_step(*ms);
             Ok(())
         }
         WorkflowStep::Notify { title, body } => {
+            println!("Sending notification: \"{}\"...", title);
             notify_step(title, body)
         }
     }

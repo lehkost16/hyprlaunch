@@ -262,9 +262,27 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         let step_num = i + 1;
                         match step {
                             WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
-                                let ws_str = workspace.as_ref().map(|w| format!("WS: {}", w)).unwrap_or_else(|| "WS: Default".to_string());
-                                let mc_str = monitor_cond.as_ref().map(|c| format!(" [If {}]", c)).unwrap_or_default();
-                                let silent_str = if silent.unwrap_or(false) { " [Silent]" } else { "" };
+                                let label = std::path::Path::new(desktop)
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(desktop);
+                                    
+                                let mut tags = Vec::new();
+                                if let Some(ws) = workspace {
+                                    tags.push(format!("WS: {}", ws));
+                                }
+                                if let Some(cond) = monitor_cond {
+                                    tags.push(format!("Cond: {}", cond));
+                                }
+                                if silent.unwrap_or(false) {
+                                    tags.push("Silent".to_string());
+                                }
+                                
+                                let tags_str = if tags.is_empty() {
+                                    "".to_string()
+                                } else {
+                                    format!(" ({})", tags.join(", "))
+                                };
                                 
                                 let exists = if desktop.ends_with(".desktop") {
                                     find_desktop_file(desktop).is_some()
@@ -278,15 +296,26 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 };
                                 
                                 ListItem::new(format!(
-                                    "{} {}. Launch: {}   ({}, {}{})",
-                                    prefix, step_num, desktop, ws_str, silent_str, mc_str
+                                    "{} {}. Launch: {}{}",
+                                    prefix, step_num, label, tags_str
                                 )).style(style)
                             }
                             WorkflowStep::RunScript { command, dir } => {
-                                let dir_str = dir.as_ref().map(|d| format!(" (in {})", d)).unwrap_or_default();
+                                let cmd_short = if command.len() > 35 {
+                                    format!("{}...", &command[..32])
+                                } else {
+                                    command.clone()
+                                };
+                                let dir_str = dir.as_ref().map(|d| {
+                                    let dir_name = std::path::Path::new(d)
+                                        .file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or(d);
+                                    format!(" (in {})", dir_name)
+                                }).unwrap_or_default();
                                 ListItem::new(format!(
-                                    "⚙️  {}. Script: {} {}",
-                                    step_num, command, dir_str
+                                    "⚙️  {}. Script: {}{}",
+                                    step_num, cmd_short, dir_str
                                 )).style(Style::default().fg(Color::LightCyan))
                             }
                             WorkflowStep::Wait { ms } => {
@@ -296,9 +325,14 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 )).style(Style::default().fg(Color::LightYellow))
                             }
                             WorkflowStep::Notify { title, body } => {
+                                let body_short = if body.len() > 30 {
+                                    format!("{}...", &body[..27])
+                                } else {
+                                    body.clone()
+                                };
                                 ListItem::new(format!(
                                     "🔔 {}. Notify: \"{}\" - {}",
-                                    step_num, title, body
+                                    step_num, title, body_short
                                 )).style(Style::default().fg(Color::LightMagenta))
                             }
                         }
@@ -335,40 +369,82 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     match step {
                         WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
                             let is_desktop = desktop.ends_with(".desktop");
-                            let details = if is_desktop {
-                                if let Some(path) = find_desktop_file(desktop) {
-                                    format!("Desktop File Found at: {:?}", path)
+                            let status_text = if is_desktop {
+                                if find_desktop_file(desktop).is_some() {
+                                    "✔ Desktop Entry Found"
                                 } else {
-                                    "⚠️ Warning: Desktop file not found on system!".to_string()
+                                    "✘ Desktop Entry Not Found"
                                 }
                             } else {
-                                "Raw binary or custom bash command".to_string()
+                                "✔ Custom Command / Binary"
                             };
-                            
-                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Launch Application", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Target:       "), Span::styled(desktop, Style::default().fg(Color::Cyan))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(workspace.as_deref().unwrap_or("Default"), Style::default().fg(Color::Magenta))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(if silent.unwrap_or(false) { "Yes" } else { "No" })]));
-                            if let Some(cond) = monitor_cond {
-                                details_lines.push(Line::from(vec![Span::raw(" Monitor Cond: "), Span::styled(cond, Style::default().fg(Color::Yellow))]));
-                            }
-                            details_lines.push(Line::from(vec![Span::raw(" System Check: "), Span::styled(details, if is_desktop && find_desktop_file(desktop).is_none() { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })]));
+                            let status_style = if is_desktop && find_desktop_file(desktop).is_none() {
+                                Style::default().fg(Color::Red)
+                            } else {
+                                Style::default().fg(Color::Green)
+                            };
+
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Type:    "),
+                                Span::styled("Launch Application", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Target:  "),
+                                Span::styled(desktop, Style::default().fg(Color::Cyan))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Config:  "),
+                                Span::raw(format!(
+                                    "Workspace: {} | Silent: {} | Monitor Condition: {}",
+                                    workspace.as_deref().unwrap_or("Default"),
+                                    if silent.unwrap_or(false) { "Yes" } else { "No" },
+                                    monitor_cond.as_deref().unwrap_or("None")
+                                ))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Status:  "),
+                                Span::styled(status_text, status_style)
+                            ]));
                         }
                         WorkflowStep::RunScript { command, dir } => {
-                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Run Shell Script / Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(command, Style::default().fg(Color::Cyan))]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Type:    "),
+                                Span::styled("Run Shell Script / Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Command: "),
+                                Span::styled(command, Style::default().fg(Color::Cyan))
+                            ]));
                             if let Some(d) = dir {
-                                details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(d)]));
+                                details_lines.push(Line::from(vec![
+                                    Span::raw(" Dir:     "),
+                                    Span::raw(d)
+                                ]));
                             }
                         }
                         WorkflowStep::Wait { ms } => {
-                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Wait / Sleep Delay", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Duration:     "), Span::styled(format!("{} milliseconds", ms), Style::default().fg(Color::Cyan))]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Type:    "),
+                                Span::styled("Wait / Sleep Delay", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Delay:   "),
+                                Span::styled(format!("{} milliseconds", ms), Style::default().fg(Color::Cyan))
+                            ]));
                         }
                         WorkflowStep::Notify { title, body } => {
-                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Desktop Notification", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Title:        "), Span::styled(title, Style::default().fg(Color::Cyan))]));
-                            details_lines.push(Line::from(vec![Span::raw(" Message Body: "), Span::raw(body)]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Type:    "),
+                                Span::styled("Desktop Notification", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Title:   "),
+                                Span::styled(title, Style::default().fg(Color::Cyan))
+                            ]));
+                            details_lines.push(Line::from(vec![
+                                Span::raw(" Body:    "),
+                                Span::raw(body)
+                            ]));
                         }
                     }
                 } else {
