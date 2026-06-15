@@ -31,6 +31,13 @@ enum AppState {
         old_name: String,
         input: String,
     },
+    CloneProfilePrompt {
+        old_name: String,
+        input: String,
+    },
+    AddCustomCommandPrompt {
+        input: String,
+    },
     AddAppSearch {
         search: String,
         selected_idx: usize,
@@ -156,11 +163,11 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 .iter()
                 .map(|p| {
                     let active_indicator = if p == &config.active_profile {
-                        " (active)"
+                        "★"
                     } else {
-                        ""
+                        " "
                     };
-                    ListItem::new(format!("{}{}", p, active_indicator))
+                    ListItem::new(format!("{} {}", active_indicator, p))
                 })
                 .collect();
 
@@ -277,6 +284,15 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(path_str)]));
                         details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
                         details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
+                    } else if !app.desktop.ends_with(".desktop") {
+                        let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
+                        let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
+
+                        details_lines.push(Line::from(vec![Span::raw(" Name:         "), Span::styled("Custom Shell Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(&app.desktop, Style::default().fg(Color::Cyan))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Type:         "), Span::styled("Raw Script / Shell Command", Style::default().fg(Color::Yellow))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
+                        details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
                     } else {
                         details_lines.push(Line::from(vec![Span::styled(format!(" ⚠️ Unknown Application ({})", app.desktop), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]));
                         details_lines.push(Line::from(vec![Span::raw(" Warning:      Desktop file not found on the system.")]));
@@ -295,10 +311,10 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             // Bottom Help Pane
             let help_text = match active_pane {
                 ActivePane::Profiles => {
-                    "Enter: Launch | c: Create | r: Rename | d: Delete | Tab: Edit Apps | q: Quit"
+                    "Enter: Launch | Space: Set Active | c: Create | r: Rename | y: Clone | d: Delete | Tab: Edit Apps | q: Quit"
                 }
                 ActivePane::Apps => {
-                    "Tab: Back | a: Add App | d: Delete App | w: Workspace | s: Toggle Silent | Shift+Up/Down: Move"
+                    "Tab: Back | Enter: Test Run | a: Add App | c: Custom Cmd | d: Delete App | w: Workspace | s: Toggle Silent | Shift+Up/Down: Move"
                 }
             };
             let help_paragraph = Paragraph::new(help_text)
@@ -327,6 +343,30 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Rename Profile ")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        );
+                    f.render_widget(input_block, popup_area);
+                }
+                AppState::CloneProfilePrompt { input, .. } => {
+                    let popup_area = centered_rect(50, 20, size);
+                    f.render_widget(Clear, popup_area);
+                    let input_block = Paragraph::new(format!("\n  New Name: {}", input))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Duplicate Profile ")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        );
+                    f.render_widget(input_block, popup_area);
+                }
+                AppState::AddCustomCommandPrompt { input } => {
+                    let popup_area = centered_rect(60, 20, size);
+                    f.render_widget(Clear, popup_area);
+                    let input_block = Paragraph::new(format!("\n  Command: {}", input))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Add Custom Shell Command / Script ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
@@ -446,6 +486,20 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         };
                                     }
                                 }
+                                KeyCode::Char('y') => {
+                                    if let Some(p_name) = &selected_profile_name {
+                                        state = AppState::CloneProfilePrompt {
+                                            old_name: p_name.clone(),
+                                            input: format!("{}-copy", p_name),
+                                        };
+                                    }
+                                }
+                                KeyCode::Char(' ') => {
+                                    if let Some(p_name) = &selected_profile_name {
+                                        config.active_profile = p_name.clone();
+                                        let _ = save_config(config);
+                                    }
+                                }
                                 KeyCode::Char('d') | KeyCode::Delete => {
                                     if let Some(p_name) = &selected_profile_name {
                                         config.profiles.remove(p_name);
@@ -484,8 +538,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 KeyCode::Tab | KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                                     active_pane = ActivePane::Profiles;
                                 }
-                                KeyCode::Up => {
-                                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::CONTROL) {
                                         // Reorder up
                                         if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
                                             if idx > 0 {
@@ -502,8 +556,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         }
                                     }
                                 }
-                                KeyCode::Down => {
-                                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::CONTROL) {
                                         // Reorder down
                                         if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
                                             if idx + 1 < current_apps.len() {
@@ -525,6 +579,11 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         search: String::new(),
                                         selected_idx: 0,
                                         all_apps: all_desktop_apps.clone(),
+                                    };
+                                }
+                                KeyCode::Char('c') => {
+                                    state = AppState::AddCustomCommandPrompt {
+                                        input: String::new(),
                                     };
                                 }
                                 KeyCode::Char('d') | KeyCode::Delete => {
@@ -555,7 +614,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         };
                                     }
                                 }
-
                                 KeyCode::Char('s') => {
                                     if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
                                         if let Some(apps) = config.profiles.get_mut(p_name) {
@@ -563,6 +621,15 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                             apps[idx].silent = Some(!cur_silent);
                                             let _ = save_config(config);
                                         }
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(idx) = app_list_state.selected() {
+                                        let app = &current_apps[idx];
+                                        let app_clone = app.clone();
+                                        std::thread::spawn(move || {
+                                            let _ = crate::launcher::launch_app_now(&app_clone);
+                                        });
                                     }
                                 }
                                 KeyCode::Char('q') => return Ok(()),
@@ -618,6 +685,73 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                     if let Some(pos) = p.iter().position(|name| name == trimmed) {
                                         profile_list_state.select(Some(pos));
                                     }
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            input.push(c);
+                        }
+                        _ => {}
+                    },
+                    AppState::CloneProfilePrompt { old_name, input } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Enter => {
+                            let trimmed = input.trim();
+                            if !trimmed.is_empty() && trimmed != old_name {
+                                if let Some(apps) = config.profiles.get(old_name) {
+                                    let apps_clone = apps.clone();
+                                    config.profiles.insert(trimmed.to_string(), apps_clone);
+                                    let _ = save_config(config);
+
+                                    // Reset selection to cloned profile
+                                    let mut p: Vec<String> = config.profiles.keys().cloned().collect();
+                                    p.sort();
+                                    if let Some(pos) = p.iter().position(|name| name == trimmed) {
+                                        profile_list_state.select(Some(pos));
+                                    }
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            input.push(c);
+                        }
+                        _ => {}
+                    },
+                    AppState::AddCustomCommandPrompt { input } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Enter => {
+                            let trimmed = input.trim().to_string();
+                            if !trimmed.is_empty() {
+                                if let Some(p_name) = &selected_profile_name {
+                                    let new_len = if let Some(apps) = config.profiles.get_mut(p_name) {
+                                        apps.push(ProfileApp {
+                                            desktop: trimmed,
+                                            workspace: None,
+                                            silent: Some(false),
+                                        });
+                                        apps.len()
+                                    } else {
+                                        config.profiles.insert(p_name.clone(), vec![ProfileApp {
+                                            desktop: trimmed,
+                                            workspace: None,
+                                            silent: Some(false),
+                                        }]);
+                                        1
+                                    };
+                                    let _ = save_config(config);
+                                    app_list_state.select(Some(new_len - 1));
                                 }
                             }
                             state = AppState::Main;

@@ -1,5 +1,5 @@
 use crate::config::ProfileApp;
-use crate::desktop::{find_desktop_file, parse_desktop_file, DesktopEntry};
+use crate::desktop::{find_desktop_file, parse_desktop_file, parse_exec_line, DesktopEntry};
 use std::process::Command;
 use std::thread;
 use std::path::Path;
@@ -59,17 +59,23 @@ pub fn is_app_running(entry: &DesktopEntry) -> bool {
 }
 
 pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
-    let path = match find_desktop_file(&app.desktop) {
-        Some(p) => p,
-        None => {
-            return Err(format!("Could not find desktop file for: {}", app.desktop).into());
+    let entry = if let Some(path) = find_desktop_file(&app.desktop) {
+        match parse_desktop_file(&path) {
+            Some(e) => e,
+            None => {
+                return Err(format!("Failed to parse desktop file at: {:?}", path).into());
+            }
         }
-    };
-
-    let entry = match parse_desktop_file(&path) {
-        Some(e) => e,
-        None => {
-            return Err(format!("Failed to parse desktop file at: {:?}", path).into());
+    } else {
+        let exec_args = parse_exec_line(&app.desktop)
+            .unwrap_or_else(|| vec![app.desktop.clone()]);
+        DesktopEntry {
+            filename: app.desktop.clone(),
+            file_path: std::path::PathBuf::new(),
+            name: "Custom Command".to_string(),
+            exec: exec_args,
+            path: None,
+            hidden: false,
         }
     };
 
