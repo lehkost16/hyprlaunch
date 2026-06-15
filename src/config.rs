@@ -5,41 +5,83 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ProfileApp {
-    pub desktop: String,
+#[serde(tag = "type")]
+pub enum WorkflowStep {
+    #[serde(rename = "launch")]
+    Launch {
+        desktop: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        silent: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        monitor_cond: Option<String>,
+    },
+    #[serde(rename = "script")]
+    RunScript {
+        command: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
+    },
+    #[serde(rename = "wait")]
+    Wait {
+        ms: u64,
+    },
+    #[serde(rename = "notify")]
+    Notify {
+        title: String,
+        body: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Workflow {
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub silent: Option<bool>,
+    pub project_path: Option<String>,
+    pub steps: Vec<WorkflowStep>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Config {
-    pub active_profile: String,
-    pub profiles: HashMap<String, Vec<ProfileApp>>,
+    pub active_workflow: String,
+    pub workflows: HashMap<String, Workflow>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let mut profiles = HashMap::new();
-        profiles.insert(
+        let mut workflows = HashMap::new();
+        workflows.insert(
             "default".to_string(),
-            vec![
-                ProfileApp {
-                    desktop: "firefox.desktop".to_string(),
-                    workspace: Some("1".to_string()),
-                    silent: Some(false),
-                },
-                ProfileApp {
-                    desktop: "kitty.desktop".to_string(),
-                    workspace: Some("2".to_string()),
-                    silent: Some(true),
-                },
-            ],
+            Workflow {
+                name: "default".to_string(),
+                description: Some("Default developer workstation startup".to_string()),
+                project_path: None,
+                steps: vec![
+                    WorkflowStep::Notify {
+                        title: "System Startup".to_string(),
+                        body: "Launching default developer workspace...".to_string(),
+                    },
+                    WorkflowStep::Launch {
+                        desktop: "firefox.desktop".to_string(),
+                        workspace: Some("1".to_string()),
+                        silent: Some(false),
+                        monitor_cond: None,
+                    },
+                    WorkflowStep::Launch {
+                        desktop: "kitty.desktop".to_string(),
+                        workspace: Some("2".to_string()),
+                        silent: Some(true),
+                        monitor_cond: None,
+                    },
+                ],
+            },
         );
         Config {
-            active_profile: "default".to_string(),
-            profiles,
+            active_workflow: "default".to_string(),
+            workflows,
         }
     }
 }
@@ -60,12 +102,57 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
         save_config(&config)?;
         return Ok(config);
     }
-
-    let mut file = File::open(path)?;
+    
+    let mut file = File::open(&path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    let config: Config = serde_json::from_str(&contents)?;
-    Ok(config)
+    
+    // 1. Try to parse as new Config format
+    if let Ok(config) = serde_json::from_str::<Config>(&contents) {
+        return Ok(config);
+    }
+    
+    // 2. Try to parse as old config format and migrate
+    #[derive(Deserialize)]
+    struct OldProfileApp {
+        desktop: String,
+        workspace: Option<String>,
+        silent: Option<bool>,
+    }
+    #[derive(Deserialize)]
+    struct OldConfig {
+        active_profile: String,
+        profiles: HashMap<String, Vec<OldProfileApp>>,
+    }
+    
+    if let Ok(old_config) = serde_json::from_str::<OldConfig>(&contents) {
+        println!("Migrating legacy hyprlaunch configuration to workflow orchestrator format...");
+        let mut workflows = HashMap::new();
+        for (profile_name, apps) in old_config.profiles {
+            let steps = apps.into_iter().map(|app| {
+                WorkflowStep::Launch {
+                    desktop: app.desktop,
+                    workspace: app.workspace,
+                    silent: app.silent,
+                    monitor_cond: None,
+                }
+            }).collect();
+            workflows.insert(profile_name.clone(), Workflow {
+                name: profile_name,
+                description: None,
+                project_path: None,
+                steps,
+            });
+        }
+        let migrated_config = Config {
+            active_workflow: old_config.active_profile,
+            workflows,
+        };
+        save_config(&migrated_config)?;
+        return Ok(migrated_config);
+    }
+    
+    Err("Failed to parse configuration file (invalid format)".into())
 }
 
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {

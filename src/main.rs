@@ -3,18 +3,19 @@ use std::io::IsTerminal;
 
 pub mod config;
 pub mod desktop;
+pub mod health;
 pub mod launcher;
 pub mod tui;
 
 fn print_help() {
-    println!("hyprlaunch - A simple, profile-based application launcher for Hyprland");
+    println!("hyprlaunch - Workflow Orchestrator for Hyprland");
     println!();
     println!("Usage:");
     println!("  hyprlaunch                 Open the interactive configuration TUI (if in terminal)");
-    println!("                             or launch the active profile (if non-interactive)");
+    println!("                             or launch the active workflow (if non-interactive)");
     println!("  hyprlaunch tui             Explicitly open the configuration TUI");
-    println!("  hyprlaunch list            List all available profile names");
-    println!("  hyprlaunch <profile_name>  Launch applications for the specified profile");
+    println!("  hyprlaunch list            List all available workflow names");
+    println!("  hyprlaunch <workflow_name> Launch the specified workflow");
     println!("  hyprlaunch --help | -h     Print this help message");
 }
 
@@ -31,10 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tui::run_tui()?;
         } else {
             let cfg = config::load_config()?;
-            if let Some(apps) = cfg.profiles.get(&cfg.active_profile) {
-                launcher::launch_profile(apps)?;
+            if let Some(wf) = cfg.workflows.get(&cfg.active_workflow) {
+                launcher::launch_workflow(&wf.steps)?;
             } else {
-                eprintln!("Active profile '{}' not found in config.", cfg.active_profile);
+                eprintln!("Active workflow '{}' not found in config.", cfg.active_workflow);
             }
         }
     } else {
@@ -44,24 +45,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "list" => {
                 let cfg = config::load_config()?;
-                println!("Available profiles:");
-                let mut profiles: Vec<&String> = cfg.profiles.keys().collect();
-                profiles.sort();
-                for p in profiles {
-                    if *p == cfg.active_profile {
-                        println!(" - {} (active)", p);
+                println!("Available workflows:");
+                let mut workflows: Vec<&String> = cfg.workflows.keys().collect();
+                workflows.sort();
+                for w in workflows {
+                    if *w == cfg.active_workflow {
+                        println!(" - {} (active)", w);
                     } else {
-                        println!(" - {}", p);
+                        println!(" - {}", w);
                     }
                 }
             }
-            profile_name => {
+            workflow_name => {
                 let cfg = config::load_config()?;
-                if let Some(apps) = cfg.profiles.get(profile_name) {
-                    println!("Launching profile: {}", profile_name);
-                    launcher::launch_profile(apps)?;
+                if let Some(wf) = cfg.workflows.get(workflow_name) {
+                    println!("Launching workflow: {}", workflow_name);
+                    launcher::launch_workflow(&wf.steps)?;
                 } else {
-                    eprintln!("Profile '{}' not found in config.", profile_name);
+                    eprintln!("Workflow '{}' not found in config.", workflow_name);
                     std::process::exit(1);
                 }
             }

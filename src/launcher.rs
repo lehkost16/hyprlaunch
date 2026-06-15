@@ -1,23 +1,8 @@
-use crate::config::ProfileApp;
+use crate::config::WorkflowStep;
 use crate::desktop::{find_desktop_file, parse_desktop_file, parse_exec_line, DesktopEntry};
 use std::process::Command;
 use std::thread;
 use std::path::Path;
-use ratatui::widgets::ListState;
-
-pub struct AppUiState{
-    pub name: String,
-    pub config: ProfileApp,
-    pub is_active: bool,
-}
-
-pub struct TuiApplications{
-    pub apps: Vec<AppUiState>,
-    pub list_state: ListState,
-    pub should_quit: bool,
-}
-
-
 
 pub fn is_app_running(entry: &DesktopEntry) -> bool {
     if entry.exec.is_empty() {
@@ -58,8 +43,77 @@ pub fn is_app_running(entry: &DesktopEntry) -> bool {
     status.map(|s| s.success()).unwrap_or(false)
 }
 
-pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>> {
-    let entry = if let Some(path) = find_desktop_file(&app.desktop) {
+pub fn get_active_monitors() -> Vec<String> {
+    // Try to parse using hyprctl monitors -j
+    let output = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output();
+    
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json_str) = std::str::from_utf8(&out.stdout) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(arr) = value.as_array() {
+                        return arr.iter()
+                            .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                            .collect();
+                    }
+                }
+            }
+        }
+    }
+    
+    // Fallback: parse plain text output of hyprctl monitors
+    let output = Command::new("hyprctl")
+        .arg("monitors")
+        .output();
+    
+    let mut monitors = Vec::new();
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if line.starts_with("Monitor ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() > 1 {
+                    // Strip trailing colon or paren if any
+                    let name = parts[1].trim_end_matches(':').trim_end_matches('(');
+                    monitors.push(name.to_string());
+                }
+            }
+        }
+    }
+    monitors
+}
+
+pub fn resolve_workspace(
+    workspace: Option<&str>,
+    monitor_cond: Option<&str>,
+    active_monitors: &[String],
+) -> Option<String> {
+    if let Some(cond) = monitor_cond {
+        // Syntax: "HDMI-A-1?3:1"
+        if let Some(q_pos) = cond.find('?') {
+            let monitor = cond[..q_pos].trim();
+            let remainder = &cond[q_pos + 1..];
+            if let Some(colon_pos) = remainder.find(':') {
+                let true_ws = remainder[..colon_pos].trim();
+                let false_ws = remainder[colon_pos + 1..].trim();
+                let is_connected = active_monitors.iter().any(|m| m == monitor);
+                let resolved = if is_connected { true_ws } else { false_ws };
+                return Some(resolved.to_string());
+            }
+        }
+    }
+    workspace.map(|w| w.to_string())
+}
+
+pub fn launch_step(
+    desktop: &str,
+    workspace: Option<&str>,
+    silent: Option<bool>,
+    monitor_cond: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let entry = if let Some(path) = find_desktop_file(desktop) {
         match parse_desktop_file(&path) {
             Some(e) => e,
             None => {
@@ -67,10 +121,10 @@ pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>
             }
         }
     } else {
-        let exec_args = parse_exec_line(&app.desktop)
-            .unwrap_or_else(|| vec![app.desktop.clone()]);
+        let exec_args = parse_exec_line(desktop)
+            .unwrap_or_else(|| vec![desktop.to_string()]);
         DesktopEntry {
-            filename: app.desktop.clone(),
+            filename: desktop.to_string(),
             file_path: std::path::PathBuf::new(),
             name: "Custom Command".to_string(),
             exec: exec_args,
@@ -80,7 +134,7 @@ pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>
     };
 
     if is_app_running(&entry) {
-        println!("Application '{}' (from {}) is already running. Skipping launch.", entry.name, app.desktop);
+        println!("Application '{}' (from {}) is already running. Skipping launch.", entry.name, desktop);
         return Ok(());
     }
 
@@ -110,8 +164,11 @@ pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
 
-    let hypr_cmd = if let Some(ref ws) = app.workspace {
-        let silent_flag = if app.silent.unwrap_or(false) { " silent" } else { "" };
+    let active_monitors = get_active_monitors();
+    let resolved_ws = resolve_workspace(workspace, monitor_cond, &active_monitors);
+
+    let hypr_cmd = if let Some(ref ws) = resolved_ws {
+        let silent_flag = if silent.unwrap_or(false) { " silent" } else { "" };
         format!(
             "hl.dsp.exec_cmd(\"{}\", {{ workspace = \"{}{}\" }})",
             escaped_lua_cmd, ws, silent_flag
@@ -130,22 +187,91 @@ pub fn launch_app_now(app: &ProfileApp) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn launch_profile(apps: &[ProfileApp]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut handles = Vec::new();
-    
-    for app in apps {
-        let app = app.clone();
-        let handle = thread::spawn(move || {
-            if let Err(e) = launch_app_now(&app) {
-                eprintln!("Error launching {}: {}", app.desktop, e);
-            }
-        });
-        handles.push(handle);
+pub fn run_script_step(command: &str, dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
     }
-    
-    for handle in handles {
-        let _ = handle.join();
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(format!("Command exited with status: {:?}", status.code()).into());
     }
-    
     Ok(())
 }
+
+pub fn wait_step(ms: u64) {
+    thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+pub fn notify_step(title: &str, body: &str) -> Result<(), Box<dyn std::error::Error>> {
+    Command::new("notify-send")
+        .arg(title)
+        .arg(body)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error>> {
+    match step {
+        WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
+            launch_step(desktop, workspace.as_deref(), *silent, monitor_cond.as_deref())
+        }
+        WorkflowStep::RunScript { command, dir } => {
+            run_script_step(command, dir.as_deref())
+        }
+        WorkflowStep::Wait { ms } => {
+            wait_step(*ms);
+            Ok(())
+        }
+        WorkflowStep::Notify { title, body } => {
+            notify_step(title, body)
+        }
+    }
+}
+
+pub fn launch_workflow(steps: &[WorkflowStep]) -> Result<(), Box<dyn std::error::Error>> {
+    for step in steps {
+        if let Err(e) = execute_step(step) {
+            eprintln!("Error executing workflow step: {}", e);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_workspace() {
+        let active = vec!["HDMI-A-1".to_string(), "eDP-1".to_string()];
+        
+        // Match when monitor connected
+        assert_eq!(
+            resolve_workspace(Some("1"), Some("HDMI-A-1?3:1"), &active),
+            Some("3".to_string())
+        );
+        
+        // Match fallback when monitor not connected
+        assert_eq!(
+            resolve_workspace(Some("1"), Some("DP-1?3:1"), &active),
+            Some("1".to_string())
+        );
+        
+        // Fall back to workspace when no condition is provided
+        assert_eq!(
+            resolve_workspace(Some("5"), None, &active),
+            Some("5".to_string())
+        );
+        
+        // Handle no workspace and no condition
+        assert_eq!(
+            resolve_workspace(None, None, &active),
+            None
+        );
+    }
+}
+

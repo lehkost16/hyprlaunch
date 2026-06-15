@@ -1,6 +1,7 @@
-use crate::config::{load_config, save_config, Config, ProfileApp};
-use crate::desktop::{scan_desktop_entries, DesktopEntry};
-use crate::launcher::launch_profile;
+use crate::config::{load_config, save_config, Config, Workflow, WorkflowStep};
+use crate::desktop::{scan_desktop_entries, DesktopEntry, find_desktop_file};
+use crate::launcher::{launch_workflow, execute_step};
+use crate::health::validate_workflow_steps;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -18,34 +19,69 @@ use ratatui::{
 use std::io;
 
 enum ActivePane {
-    Profiles,
-    Apps,
+    Workflows,
+    Steps,
 }
 
 enum AppState {
     Main,
-    NewProfilePrompt {
+    NewWorkflowPrompt {
         input: String,
     },
-    RenameProfilePrompt {
+    RenameWorkflowPrompt {
         old_name: String,
         input: String,
     },
-    CloneProfilePrompt {
+    CloneWorkflowPrompt {
         old_name: String,
         input: String,
     },
-    AddCustomCommandPrompt {
-        input: String,
+    AddStepTypeSelector {
+        selected_idx: usize,
     },
     AddAppSearch {
         search: String,
         selected_idx: usize,
         all_apps: Vec<DesktopEntry>,
     },
-    EditWorkspacePrompt {
+    AddCustomCommandPrompt {
         input: String,
-        app_idx: usize,
+    },
+    AddWaitPrompt {
+        input: String,
+    },
+    AddNotifyPrompt {
+        title_input: String,
+        body_input: String,
+        active_field: usize,
+    },
+    EditStepLaunch {
+        step_idx: usize,
+        desktop: String,
+        workspace: String,
+        silent: bool,
+        monitor_cond: String,
+        active_field: usize,
+    },
+    EditStepScript {
+        step_idx: usize,
+        command: String,
+        dir: String,
+        active_field: usize,
+    },
+    EditStepWait {
+        step_idx: usize,
+        ms: String,
+    },
+    EditStepNotify {
+        step_idx: usize,
+        title: String,
+        body: String,
+        active_field: usize,
+    },
+    HealthCheckReport {
+        reports: Vec<String>,
+        scroll_idx: usize,
     },
 }
 
@@ -86,63 +122,63 @@ fn run_event_loop<B: ratatui::backend::Backend>(
     config: &mut Config,
     all_desktop_apps: Vec<DesktopEntry>,
 ) -> io::Result<()> {
-    let mut active_pane = ActivePane::Profiles;
+    let mut active_pane = ActivePane::Workflows;
     let mut state = AppState::Main;
 
     // List states for tracking UI selections
-    let mut profile_list_state = ListState::default();
-    let mut app_list_state = ListState::default();
+    let mut workflow_list_state = ListState::default();
+    let mut step_list_state = ListState::default();
 
-    // Select default profile
-    let mut profiles: Vec<String> = config.profiles.keys().cloned().collect();
-    profiles.sort();
-    if let Some(pos) = profiles.iter().position(|p| p == &config.active_profile) {
-        profile_list_state.select(Some(pos));
-    } else if !profiles.is_empty() {
-        profile_list_state.select(Some(0));
+    // Select default workflow
+    let mut workflows: Vec<String> = config.workflows.keys().cloned().collect();
+    workflows.sort();
+    if let Some(pos) = workflows.iter().position(|w| w == &config.active_workflow) {
+        workflow_list_state.select(Some(pos));
+    } else if !workflows.is_empty() {
+        workflow_list_state.select(Some(0));
     }
 
     loop {
         // Prepare variables for rendering
-        let current_profiles: Vec<String> = {
-            let mut p: Vec<String> = config.profiles.keys().cloned().collect();
-            p.sort();
-            p
+        let current_workflows: Vec<String> = {
+            let mut w: Vec<String> = config.workflows.keys().cloned().collect();
+            w.sort();
+            w
         };
 
-        let selected_profile_name = profile_list_state
+        let selected_workflow_name = workflow_list_state
             .selected()
-            .and_then(|idx| current_profiles.get(idx))
+            .and_then(|idx| current_workflows.get(idx))
             .cloned();
 
-        let current_apps = selected_profile_name
+        let current_steps = selected_workflow_name
             .as_ref()
-            .and_then(|name| config.profiles.get(name))
-            .cloned()
+            .and_then(|name| config.workflows.get(name))
+            .map(|w| w.steps.clone())
             .unwrap_or_default();
 
         // Ensure selection bounds
-        if profile_list_state.selected().is_some() && current_profiles.is_empty() {
-            profile_list_state.select(None);
-        } else if profile_list_state.selected().is_none() && !current_profiles.is_empty() {
-            profile_list_state.select(Some(0));
+        if workflow_list_state.selected().is_some() && current_workflows.is_empty() {
+            workflow_list_state.select(None);
+        } else if workflow_list_state.selected().is_none() && !current_workflows.is_empty() {
+            workflow_list_state.select(Some(0));
         }
 
-        if app_list_state.selected().is_some() && current_apps.is_empty() {
-            app_list_state.select(None);
-        } else if app_list_state.selected().is_none() && !current_apps.is_empty() {
-            app_list_state.select(Some(0));
+        if step_list_state.selected().is_some() && current_steps.is_empty() {
+            step_list_state.select(None);
+        } else if step_list_state.selected().is_none() && !current_steps.is_empty() {
+            step_list_state.select(Some(0));
         }
 
         // Draw UI
-        let selected_p_name = selected_profile_name.clone();
-        let current_apps_clone = current_apps.clone();
-        let cur_profiles = current_profiles.clone();
+        let selected_w_name = selected_workflow_name.clone();
+        let current_steps_clone = current_steps.clone();
+        let cur_workflows = current_workflows.clone();
 
         terminal.draw(|f| {
             let size = f.size();
 
-            // Background / outer layout
+            // Outer layout
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
@@ -153,29 +189,29 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .split(main_chunks[0]);
 
-            // Left Pane: Profiles
+            // Left Pane: Workflows
             let left_border_style = match active_pane {
-                ActivePane::Profiles => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ActivePane::Apps => Style::default().fg(Color::DarkGray),
+                ActivePane::Workflows => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ActivePane::Steps => Style::default().fg(Color::DarkGray),
             };
 
-            let profile_items: Vec<ListItem> = cur_profiles
+            let workflow_items: Vec<ListItem> = cur_workflows
                 .iter()
-                .map(|p| {
-                    let active_indicator = if p == &config.active_profile {
+                .map(|w| {
+                    let active_indicator = if w == &config.active_workflow {
                         "★"
                     } else {
                         " "
                     };
-                    ListItem::new(format!("{} {}", active_indicator, p))
+                    ListItem::new(format!("{} {}", active_indicator, w))
                 })
                 .collect();
 
-            let profile_list = List::new(profile_items)
+            let workflow_list = List::new(workflow_items)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Profiles ")
+                        .title(" Workflows ")
                         .border_style(left_border_style),
                 )
                 .highlight_style(
@@ -186,27 +222,27 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 )
                 .highlight_symbol("> ");
 
-            f.render_stateful_widget(profile_list, body_chunks[0], &mut profile_list_state);
+            f.render_stateful_widget(workflow_list, body_chunks[0], &mut workflow_list_state);
 
-            // Right Pane Layout: Split vertically into App List and App Details
+            // Right Pane Layout: Split vertically into Step List and Step Details
             let right_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(body_chunks[1]);
 
-            // Right Pane: Profile Detail (Apps)
+            // Right Pane: Workflow Detail (Steps)
             let right_border_style = match active_pane {
-                ActivePane::Apps => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ActivePane::Profiles => Style::default().fg(Color::DarkGray),
+                ActivePane::Steps => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ActivePane::Workflows => Style::default().fg(Color::DarkGray),
             };
 
-            let right_title = match &selected_p_name {
-                Some(name) => format!(" Profile: {} ", name),
-                None => " Profile Detail ".to_string(),
+            let right_title = match &selected_w_name {
+                Some(name) => format!(" Workflow: {} ", name),
+                None => " Workflow Detail ".to_string(),
             };
 
-            if current_apps_clone.is_empty() {
-                let placeholder = Paragraph::new("\n\n   No applications configured.\n   Press 'a' to add your first application.")
+            if current_steps_clone.is_empty() {
+                let placeholder = Paragraph::new("\n\n   No steps configured.\n   Press 'a' to add your first step to this workflow.")
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
@@ -216,35 +252,57 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     .style(Style::default().fg(Color::DarkGray));
                 f.render_widget(placeholder, right_chunks[0]);
             } else {
-                let app_items: Vec<ListItem> = current_apps_clone
+                let step_items: Vec<ListItem> = current_steps_clone
                     .iter()
-                    .map(|app| {
-                        let ws_str = app
-                            .workspace
-                            .as_ref()
-                            .map(|w| format!("Workspace: {}", w))
-                            .unwrap_or_else(|| "Workspace: Default".to_string());
-                        let silent_str = if app.silent.unwrap_or(false) {
-                            " [Silent]"
-                        } else {
-                            ""
-                        };
-
-                        let exists = all_desktop_apps.iter().any(|e| e.filename == app.desktop);
-                        let (prefix, style) = if exists {
-                            ("  ", Style::default())
-                        } else {
-                            ("⚠️ ", Style::default().fg(Color::Yellow))
-                        };
-
-                        ListItem::new(format!(
-                            "{}{}   ({}{})",
-                            prefix, app.desktop, ws_str, silent_str
-                        )).style(style)
+                    .enumerate()
+                    .map(|(i, step)| {
+                        let step_num = i + 1;
+                        match step {
+                            WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
+                                let ws_str = workspace.as_ref().map(|w| format!("WS: {}", w)).unwrap_or_else(|| "WS: Default".to_string());
+                                let mc_str = monitor_cond.as_ref().map(|c| format!(" [If {}]", c)).unwrap_or_default();
+                                let silent_str = if silent.unwrap_or(false) { " [Silent]" } else { "" };
+                                
+                                let exists = if desktop.ends_with(".desktop") {
+                                    find_desktop_file(desktop).is_some()
+                                } else {
+                                    true
+                                };
+                                let (prefix, style) = if exists {
+                                    ("🚀 ", Style::default())
+                                } else {
+                                    ("⚠️ ", Style::default().fg(Color::Yellow))
+                                };
+                                
+                                ListItem::new(format!(
+                                    "{} {}. Launch: {}   ({}, {}{})",
+                                    prefix, step_num, desktop, ws_str, silent_str, mc_str
+                                )).style(style)
+                            }
+                            WorkflowStep::RunScript { command, dir } => {
+                                let dir_str = dir.as_ref().map(|d| format!(" (in {})", d)).unwrap_or_default();
+                                ListItem::new(format!(
+                                    "⚙️  {}. Script: {} {}",
+                                    step_num, command, dir_str
+                                )).style(Style::default().fg(Color::LightCyan))
+                            }
+                            WorkflowStep::Wait { ms } => {
+                                ListItem::new(format!(
+                                    "⏳ {}. Wait: {} ms",
+                                    step_num, ms
+                                )).style(Style::default().fg(Color::LightYellow))
+                            }
+                            WorkflowStep::Notify { title, body } => {
+                                ListItem::new(format!(
+                                    "🔔 {}. Notify: \"{}\" - {}",
+                                    step_num, title, body
+                                )).style(Style::default().fg(Color::LightMagenta))
+                            }
+                        }
                     })
                     .collect();
 
-                let app_list = List::new(app_items)
+                let step_list = List::new(step_items)
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
@@ -259,49 +317,62 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     )
                     .highlight_symbol("> ");
 
-                f.render_stateful_widget(app_list, right_chunks[0], &mut app_list_state);
+                f.render_stateful_widget(step_list, right_chunks[0], &mut step_list_state);
             }
 
-            // Render App Details in right_chunks[1]
+            // Render Step Details in right_chunks[1]
             let details_block = Block::default()
                 .borders(Borders::ALL)
-                .title(" Application Details ")
+                .title(" Step Details ")
                 .border_style(Style::default().fg(Color::DarkGray));
 
             let mut details_lines = Vec::new();
-            if let (Some(apps), Some(idx)) = (selected_p_name.as_ref().and_then(|n| config.profiles.get(n)), app_list_state.selected()) {
-                if let Some(app) = apps.get(idx) {
-                    if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
-                        let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
-                        let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
-                        let exec_str = entry.exec.join(" ");
-                        let path_str = entry.path.as_deref().unwrap_or("None");
-
-                        let desktop_path = entry.file_path.to_string_lossy().into_owned();
-                        details_lines.push(Line::from(vec![Span::raw(" Name:         "), Span::styled(&entry.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Desktop File: "), Span::styled(desktop_path, Style::default().fg(Color::Gray))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(exec_str, Style::default().fg(Color::Cyan))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(path_str)]));
-                        details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
-                    } else if !app.desktop.ends_with(".desktop") {
-                        let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
-                        let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
-
-                        details_lines.push(Line::from(vec![Span::raw(" Name:         "), Span::styled("Custom Shell Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(&app.desktop, Style::default().fg(Color::Cyan))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Type:         "), Span::styled("Raw Script / Shell Command", Style::default().fg(Color::Yellow))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
-                    } else {
-                        details_lines.push(Line::from(vec![Span::styled(format!(" ⚠️ Unknown Application ({})", app.desktop), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Warning:      Desktop file not found on the system.")]));
+            if let Some(idx) = step_list_state.selected() {
+                if let Some(step) = current_steps_clone.get(idx) {
+                    match step {
+                        WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
+                            let is_desktop = desktop.ends_with(".desktop");
+                            let details = if is_desktop {
+                                if let Some(path) = find_desktop_file(desktop) {
+                                    format!("Desktop File Found at: {:?}", path)
+                                } else {
+                                    "⚠️ Warning: Desktop file not found on system!".to_string()
+                                }
+                            } else {
+                                "Raw binary or custom bash command".to_string()
+                            };
+                            
+                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Launch Application", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Target:       "), Span::styled(desktop, Style::default().fg(Color::Cyan))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(workspace.as_deref().unwrap_or("Default"), Style::default().fg(Color::Magenta))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(if silent.unwrap_or(false) { "Yes" } else { "No" })]));
+                            if let Some(cond) = monitor_cond {
+                                details_lines.push(Line::from(vec![Span::raw(" Monitor Cond: "), Span::styled(cond, Style::default().fg(Color::Yellow))]));
+                            }
+                            details_lines.push(Line::from(vec![Span::raw(" System Check: "), Span::styled(details, if is_desktop && find_desktop_file(desktop).is_none() { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })]));
+                        }
+                        WorkflowStep::RunScript { command, dir } => {
+                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Run Shell Script / Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(command, Style::default().fg(Color::Cyan))]));
+                            if let Some(d) = dir {
+                                details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(d)]));
+                            }
+                        }
+                        WorkflowStep::Wait { ms } => {
+                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Wait / Sleep Delay", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Duration:     "), Span::styled(format!("{} milliseconds", ms), Style::default().fg(Color::Cyan))]));
+                        }
+                        WorkflowStep::Notify { title, body } => {
+                            details_lines.push(Line::from(vec![Span::raw(" Step Type:    "), Span::styled("Desktop Notification", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Title:        "), Span::styled(title, Style::default().fg(Color::Cyan))]));
+                            details_lines.push(Line::from(vec![Span::raw(" Message Body: "), Span::raw(body)]));
+                        }
                     }
                 } else {
-                    details_lines.push(Line::from(" No application selected."));
+                    details_lines.push(Line::from(" No step selected."));
                 }
             } else {
-                details_lines.push(Line::from(" Select an application to view details."));
+                details_lines.push(Line::from(" Select a step to view details."));
             };
 
             let details_paragraph = Paragraph::new(details_lines)
@@ -310,11 +381,11 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
             // Bottom Help Pane
             let help_text = match active_pane {
-                ActivePane::Profiles => {
-                    "Enter: Launch | Space: Set Active | c: Create | r: Rename | y: Clone | d: Delete | Tab: Edit Apps | q: Quit"
+                ActivePane::Workflows => {
+                    "Enter: Launch Workflow | Space: Set Active | c: Create | r: Rename | y: Clone | d: Delete | Tab: Edit Steps | v: Health Check | q: Quit"
                 }
-                ActivePane::Apps => {
-                    "Tab: Back | Enter: Test Run | a: Add App | c: Custom Cmd | d: Delete App | w: Workspace | s: Toggle Silent | Shift+Up/Down: Move"
+                ActivePane::Steps => {
+                    "Tab: Back | Enter: Test Run Step | a: Add Step | e: Edit Step | d: Delete Step | Shift+Up/Down: Move Step | q: Quit"
                 }
             };
             let help_paragraph = Paragraph::new(help_text)
@@ -323,41 +394,68 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
             // Draw popups based on state
             match &state {
-                AppState::NewProfilePrompt { input } => {
+                AppState::NewWorkflowPrompt { input } => {
                     let popup_area = centered_rect(50, 20, size);
                     f.render_widget(Clear, popup_area);
                     let input_block = Paragraph::new(format!("\n  > {}", input))
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(" Create New Profile ")
+                                .title(" Create New Workflow ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
-                AppState::RenameProfilePrompt { input, .. } => {
+                AppState::RenameWorkflowPrompt { input, .. } => {
                     let popup_area = centered_rect(50, 20, size);
                     f.render_widget(Clear, popup_area);
                     let input_block = Paragraph::new(format!("\n  > {}", input))
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(" Rename Profile ")
+                                .title(" Rename Workflow ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
-                AppState::CloneProfilePrompt { input, .. } => {
+                AppState::CloneWorkflowPrompt { input, .. } => {
                     let popup_area = centered_rect(50, 20, size);
                     f.render_widget(Clear, popup_area);
                     let input_block = Paragraph::new(format!("\n  New Name: {}", input))
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(" Duplicate Profile ")
+                                .title(" Duplicate Workflow ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
+                }
+                AppState::AddStepTypeSelector { selected_idx } => {
+                    let popup_area = centered_rect(50, 35, size);
+                    f.render_widget(Clear, popup_area);
+                    let options = vec![
+                        "1. Launch Desktop Application",
+                        "2. Run Custom Command / Script",
+                        "3. Wait / Delay (milliseconds)",
+                        "4. Send System Notification",
+                    ];
+                    let items: Vec<ListItem> = options.iter().enumerate().map(|(i, opt)| {
+                        let style = if i == *selected_idx {
+                            Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        ListItem::new(format!("  {}", opt)).style(style)
+                    }).collect();
+
+                    let list = List::new(items)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Select Step Type to Add ")
+                                .border_style(Style::default().fg(Color::Yellow))
+                        );
+                    f.render_widget(list, popup_area);
                 }
                 AppState::AddCustomCommandPrompt { input } => {
                     let popup_area = centered_rect(60, 20, size);
@@ -366,24 +464,63 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(" Add Custom Shell Command / Script ")
+                                .title(" Add Custom Command / Script ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
-                AppState::EditWorkspacePrompt { input, .. } => {
+                AppState::AddWaitPrompt { input } => {
                     let popup_area = centered_rect(50, 20, size);
                     f.render_widget(Clear, popup_area);
-                    let input_block = Paragraph::new(format!("\n  Workspace (e.g. 1, 2, silent): {}", input))
+                    let input_block = Paragraph::new(format!("\n  Duration (ms): {}", input))
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(" Set Workspace (Leave empty for default) ")
+                                .title(" Add Wait / Delay Step ")
                                 .border_style(Style::default().fg(Color::Yellow)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
+                AppState::AddNotifyPrompt { title_input, body_input, active_field } => {
+                    let popup_area = centered_rect(60, 45, size);
+                    f.render_widget(Clear, popup_area);
 
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Add System Notification ")
+                        .border_style(Style::default().fg(Color::Yellow));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(1)])
+                        .split(inner);
+
+                    let title_border = if *active_field == 0 {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    let body_border = if *active_field == 1 {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
+                    let p_title = Paragraph::new(format!(" {}", title_input))
+                        .block(Block::default().borders(Borders::ALL).title(" Title ").border_style(title_border));
+                    let p_body = Paragraph::new(format!(" {}", body_input))
+                        .block(Block::default().borders(Borders::ALL).title(" Body ").border_style(body_border));
+
+                    f.render_widget(p_title, chunks[0]);
+                    f.render_widget(p_body, chunks[1]);
+
+                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Add | Esc: Cancel")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(help, chunks[2]);
+                }
                 AppState::AddAppSearch {
                     search,
                     selected_idx,
@@ -442,6 +579,180 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
                     f.render_stateful_widget(app_search_list, overlay_chunks[1], &mut list_state);
                 }
+                AppState::EditStepLaunch { desktop, workspace, silent, monitor_cond, active_field, .. } => {
+                    let popup_area = centered_rect(70, 65, size);
+                    f.render_widget(Clear, popup_area);
+
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Edit Launch Step ")
+                        .border_style(Style::default().fg(Color::Yellow));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(3), // Desktop/Command
+                            Constraint::Length(3), // Workspace
+                            Constraint::Length(3), // Monitor Cond
+                            Constraint::Length(3), // Silent
+                            Constraint::Min(1)
+                        ])
+                        .split(inner);
+
+                    let styles = [
+                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 2 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 3 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                    ];
+
+                    let p_desktop = Paragraph::new(format!(" {}", desktop))
+                        .block(Block::default().borders(Borders::ALL).title(" Desktop File / Command ").border_style(styles[0]));
+                    let p_ws = Paragraph::new(format!(" {}", workspace))
+                        .block(Block::default().borders(Borders::ALL).title(" Target Workspace (optional) ").border_style(styles[1]));
+                    let p_mc = Paragraph::new(format!(" {}", monitor_cond))
+                        .block(Block::default().borders(Borders::ALL).title(" Monitor Condition (e.g. HDMI-A-1?3:1) ").border_style(styles[2]));
+
+                    let silent_val = if *silent { "[X] Enabled" } else { "[ ] Disabled" };
+                    let p_silent = Paragraph::new(format!("  {} (Press Space to Toggle)", silent_val))
+                        .block(Block::default().borders(Borders::ALL).title(" Silent Run ").border_style(styles[3]));
+
+                    f.render_widget(p_desktop, chunks[0]);
+                    f.render_widget(p_ws, chunks[1]);
+                    f.render_widget(p_mc, chunks[2]);
+                    f.render_widget(p_silent, chunks[3]);
+
+                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(help, chunks[4]);
+                }
+                AppState::EditStepScript { command, dir, active_field, .. } => {
+                    let popup_area = centered_rect(70, 45, size);
+                    f.render_widget(Clear, popup_area);
+
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Edit Script / Command Step ")
+                        .border_style(Style::default().fg(Color::Yellow));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(3), // Command
+                            Constraint::Length(3), // Working Dir
+                            Constraint::Min(1)
+                        ])
+                        .split(inner);
+
+                    let styles = [
+                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                    ];
+
+                    let p_cmd = Paragraph::new(format!(" {}", command))
+                        .block(Block::default().borders(Borders::ALL).title(" Command / Script ").border_style(styles[0]));
+                    let p_dir = Paragraph::new(format!(" {}", dir))
+                        .block(Block::default().borders(Borders::ALL).title(" Working Directory (optional) ").border_style(styles[1]));
+
+                    f.render_widget(p_cmd, chunks[0]);
+                    f.render_widget(p_dir, chunks[1]);
+
+                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(help, chunks[2]);
+                }
+                AppState::EditStepWait { ms, .. } => {
+                    let popup_area = centered_rect(50, 20, size);
+                    f.render_widget(Clear, popup_area);
+                    let input_block = Paragraph::new(format!("\n  Duration (ms): {}", ms))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Edit Wait Step ")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        );
+                    f.render_widget(input_block, popup_area);
+                }
+                AppState::EditStepNotify { title, body, active_field, .. } => {
+                    let popup_area = centered_rect(60, 45, size);
+                    f.render_widget(Clear, popup_area);
+
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Edit Notification Step ")
+                        .border_style(Style::default().fg(Color::Yellow));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(1)])
+                        .split(inner);
+
+                    let styles = [
+                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                    ];
+
+                    let p_title = Paragraph::new(format!(" {}", title))
+                        .block(Block::default().borders(Borders::ALL).title(" Title ").border_style(styles[0]));
+                    let p_body = Paragraph::new(format!(" {}", body))
+                        .block(Block::default().borders(Borders::ALL).title(" Body ").border_style(styles[1]));
+
+                    f.render_widget(p_title, chunks[0]);
+                    f.render_widget(p_body, chunks[1]);
+
+                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(help, chunks[2]);
+                }
+                AppState::HealthCheckReport { reports, scroll_idx } => {
+                    let popup_area = centered_rect(75, 75, size);
+                    f.render_widget(Clear, popup_area);
+
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Workflow Health Check Results ")
+                        .border_style(Style::default().fg(Color::Cyan));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let items: Vec<ListItem> = if reports.is_empty() {
+                        vec![ListItem::new("  ✔ All steps are healthy! No issues found.")]
+                    } else {
+                        reports.iter().map(|r| {
+                            ListItem::new(format!("  {}", r))
+                        }).collect()
+                    };
+
+                    let mut list_state = ListState::default();
+                    if !reports.is_empty() {
+                        list_state.select(Some(*scroll_idx));
+                    }
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Min(3), Constraint::Length(2)])
+                        .split(inner);
+
+                    let list = List::new(items)
+                        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+                        .highlight_symbol("> ");
+
+                    f.render_stateful_widget(list, chunks[0], &mut list_state);
+
+                    let footer = Paragraph::new("Press Enter or Esc to dismiss | Up/Down to scroll")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(footer, chunks[1]);
+                }
                 AppState::Main => {}
             }
         })?;
@@ -457,56 +768,56 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 match &mut state {
                     AppState::Main => {
                         match active_pane {
-                            ActivePane::Profiles => match key.code {
+                            ActivePane::Workflows => match key.code {
                                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                                 KeyCode::Up | KeyCode::Char('k') => {
-                                    if let Some(selected) = profile_list_state.selected() {
+                                    if let Some(selected) = workflow_list_state.selected() {
                                         if selected > 0 {
-                                            profile_list_state.select(Some(selected - 1));
+                                            workflow_list_state.select(Some(selected - 1));
                                         }
                                     }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    if let Some(selected) = profile_list_state.selected() {
-                                        if selected + 1 < current_profiles.len() {
-                                            profile_list_state.select(Some(selected + 1));
+                                    if let Some(selected) = workflow_list_state.selected() {
+                                        if selected + 1 < current_workflows.len() {
+                                            workflow_list_state.select(Some(selected + 1));
                                         }
                                     }
                                 }
                                 KeyCode::Char('c') => {
-                                    state = AppState::NewProfilePrompt {
+                                    state = AppState::NewWorkflowPrompt {
                                         input: String::new(),
                                     };
                                 }
                                 KeyCode::Char('r') => {
-                                    if let Some(p_name) = &selected_profile_name {
-                                        state = AppState::RenameProfilePrompt {
-                                            old_name: p_name.clone(),
-                                            input: p_name.clone(),
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        state = AppState::RenameWorkflowPrompt {
+                                            old_name: w_name.clone(),
+                                            input: w_name.clone(),
                                         };
                                     }
                                 }
                                 KeyCode::Char('y') => {
-                                    if let Some(p_name) = &selected_profile_name {
-                                        state = AppState::CloneProfilePrompt {
-                                            old_name: p_name.clone(),
-                                            input: format!("{}-copy", p_name),
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        state = AppState::CloneWorkflowPrompt {
+                                            old_name: w_name.clone(),
+                                            input: format!("{}-copy", w_name),
                                         };
                                     }
                                 }
                                 KeyCode::Char(' ') => {
-                                    if let Some(p_name) = &selected_profile_name {
-                                        config.active_profile = p_name.clone();
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        config.active_workflow = w_name.clone();
                                         let _ = save_config(config);
                                     }
                                 }
                                 KeyCode::Char('d') | KeyCode::Delete => {
-                                    if let Some(p_name) = &selected_profile_name {
-                                        config.profiles.remove(p_name);
-                                        // If deleted active profile, reset active_profile
-                                        if &config.active_profile == p_name {
-                                            config.active_profile = config
-                                                .profiles
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        config.workflows.remove(w_name);
+                                        // If deleted active workflow, reset active_workflow
+                                        if &config.active_workflow == w_name {
+                                            config.active_workflow = config
+                                                .workflows
                                                 .keys()
                                                 .next()
                                                 .cloned()
@@ -515,120 +826,146 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         let _ = save_config(config);
                                     }
                                 }
+                                KeyCode::Char('v') => {
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        if let Some(wf) = config.workflows.get(w_name) {
+                                            let reports = validate_workflow_steps(&wf.steps);
+                                            state = AppState::HealthCheckReport {
+                                                reports,
+                                                scroll_idx: 0,
+                                            };
+                                        }
+                                    }
+                                }
                                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
-                                    active_pane = ActivePane::Apps;
-                                    if !current_apps.is_empty() {
-                                        app_list_state.select(Some(0));
+                                    active_pane = ActivePane::Steps;
+                                    if !current_steps.is_empty() {
+                                        step_list_state.select(Some(0));
                                     } else {
-                                        app_list_state.select(None);
+                                        step_list_state.select(None);
                                     }
                                 }
                                 KeyCode::Enter => {
-                                    if let Some(p_name) = &selected_profile_name {
-                                        config.active_profile = p_name.clone();
+                                    if let Some(w_name) = &selected_workflow_name {
+                                        config.active_workflow = w_name.clone();
                                         let _ = save_config(config);
                                         // Launch and exit TUI!
-                                        let _ = launch_profile(&current_apps);
+                                        let _ = launch_workflow(&current_steps);
                                         return Ok(());
                                     }
                                 }
                                 _ => {}
                             },
-                            ActivePane::Apps => match key.code {
+                            ActivePane::Steps => match key.code {
                                 KeyCode::Tab | KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                                    active_pane = ActivePane::Profiles;
+                                    active_pane = ActivePane::Workflows;
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::CONTROL) {
                                         // Reorder up
-                                        if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
+                                        if let (Some(w_name), Some(idx)) = (&selected_workflow_name, step_list_state.selected()) {
                                             if idx > 0 {
-                                                if let Some(apps) = config.profiles.get_mut(p_name) {
-                                                    apps.swap(idx, idx - 1);
-                                                    app_list_state.select(Some(idx - 1));
+                                                if let Some(wf) = config.workflows.get_mut(w_name) {
+                                                    wf.steps.swap(idx, idx - 1);
+                                                    step_list_state.select(Some(idx - 1));
                                                     let _ = save_config(config);
                                                 }
                                             }
                                         }
-                                    } else if let Some(selected) = app_list_state.selected() {
+                                    } else if let Some(selected) = step_list_state.selected() {
                                         if selected > 0 {
-                                            app_list_state.select(Some(selected - 1));
+                                            step_list_state.select(Some(selected - 1));
                                         }
                                     }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::CONTROL) {
                                         // Reorder down
-                                        if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
-                                            if idx + 1 < current_apps.len() {
-                                                if let Some(apps) = config.profiles.get_mut(p_name) {
-                                                    apps.swap(idx, idx + 1);
-                                                    app_list_state.select(Some(idx + 1));
+                                        if let (Some(w_name), Some(idx)) = (&selected_workflow_name, step_list_state.selected()) {
+                                            if idx + 1 < current_steps.len() {
+                                                if let Some(wf) = config.workflows.get_mut(w_name) {
+                                                    wf.steps.swap(idx, idx + 1);
+                                                    step_list_state.select(Some(idx + 1));
                                                     let _ = save_config(config);
                                                 }
                                             }
                                         }
-                                    } else if let Some(selected) = app_list_state.selected() {
-                                        if selected + 1 < current_apps.len() {
-                                            app_list_state.select(Some(selected + 1));
+                                    } else if let Some(selected) = step_list_state.selected() {
+                                        if selected + 1 < current_steps.len() {
+                                            step_list_state.select(Some(selected + 1));
                                         }
                                     }
                                 }
                                 KeyCode::Char('a') => {
-                                    state = AppState::AddAppSearch {
-                                        search: String::new(),
+                                    state = AppState::AddStepTypeSelector {
                                         selected_idx: 0,
-                                        all_apps: all_desktop_apps.clone(),
                                     };
                                 }
-                                KeyCode::Char('c') => {
-                                    state = AppState::AddCustomCommandPrompt {
-                                        input: String::new(),
-                                    };
+                                KeyCode::Char('e') => {
+                                    if let Some(idx) = step_list_state.selected() {
+                                        if let Some(step) = current_steps.get(idx) {
+                                            match step {
+                                                WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
+                                                    state = AppState::EditStepLaunch {
+                                                        step_idx: idx,
+                                                        desktop: desktop.clone(),
+                                                        workspace: workspace.clone().unwrap_or_default(),
+                                                        silent: silent.unwrap_or(false),
+                                                        monitor_cond: monitor_cond.clone().unwrap_or_default(),
+                                                        active_field: 0,
+                                                    };
+                                                }
+                                                WorkflowStep::RunScript { command, dir } => {
+                                                    state = AppState::EditStepScript {
+                                                        step_idx: idx,
+                                                        command: command.clone(),
+                                                        dir: dir.clone().unwrap_or_default(),
+                                                        active_field: 0,
+                                                    };
+                                                }
+                                                WorkflowStep::Wait { ms } => {
+                                                    state = AppState::EditStepWait {
+                                                        step_idx: idx,
+                                                        ms: ms.to_string(),
+                                                    };
+                                                }
+                                                WorkflowStep::Notify { title, body } => {
+                                                    state = AppState::EditStepNotify {
+                                                        step_idx: idx,
+                                                        title: title.clone(),
+                                                        body: body.clone(),
+                                                        active_field: 0,
+                                                    };
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 KeyCode::Char('d') | KeyCode::Delete => {
-                                    if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
-                                        let apps_empty = if let Some(apps) = config.profiles.get_mut(p_name) {
-                                            apps.remove(idx);
-                                            let empty = apps.is_empty();
+                                    if let (Some(w_name), Some(idx)) = (&selected_workflow_name, step_list_state.selected()) {
+                                        let steps_empty = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                            wf.steps.remove(idx);
+                                            let empty = wf.steps.is_empty();
                                             if !empty {
-                                                app_list_state.select(Some(idx.min(apps.len() - 1)));
+                                                step_list_state.select(Some(idx.min(wf.steps.len() - 1)));
                                             }
                                             empty
                                         } else {
                                             false
                                         };
 
-                                        if apps_empty {
-                                            active_pane = ActivePane::Profiles;
+                                        if steps_empty {
+                                            active_pane = ActivePane::Workflows;
                                         }
                                         let _ = save_config(config);
                                     }
                                 }
-                                KeyCode::Char('w') => {
-                                    if let Some(idx) = app_list_state.selected() {
-                                        let current_ws = current_apps[idx].workspace.clone().unwrap_or_default();
-                                        state = AppState::EditWorkspacePrompt {
-                                            input: current_ws,
-                                            app_idx: idx,
-                                        };
-                                    }
-                                }
-                                KeyCode::Char('s') => {
-                                    if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
-                                        if let Some(apps) = config.profiles.get_mut(p_name) {
-                                            let cur_silent = apps[idx].silent.unwrap_or(false);
-                                            apps[idx].silent = Some(!cur_silent);
-                                            let _ = save_config(config);
-                                        }
-                                    }
-                                }
                                 KeyCode::Enter => {
-                                    if let Some(idx) = app_list_state.selected() {
-                                        let app = &current_apps[idx];
-                                        let app_clone = app.clone();
+                                    if let Some(idx) = step_list_state.selected() {
+                                        let step = &current_steps[idx];
+                                        let step_clone = step.clone();
                                         std::thread::spawn(move || {
-                                            let _ = crate::launcher::launch_app_now(&app_clone);
+                                            let _ = execute_step(&step_clone);
                                         });
                                     }
                                 }
@@ -637,22 +974,26 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             },
                         }
                     }
-                    AppState::NewProfilePrompt { input } => match key.code {
+                    AppState::NewWorkflowPrompt { input } => match key.code {
                         KeyCode::Esc => {
                             state = AppState::Main;
                         }
                         KeyCode::Enter => {
                             let trimmed = input.trim();
                             if !trimmed.is_empty() {
-                                config.profiles.entry(trimmed.to_string()).or_default();
-                                config.active_profile = trimmed.to_string();
+                                config.workflows.insert(trimmed.to_string(), Workflow {
+                                    name: trimmed.to_string(),
+                                    description: None,
+                                    project_path: None,
+                                    steps: Vec::new(),
+                                });
+                                config.active_workflow = trimmed.to_string();
                                 let _ = save_config(config);
 
-                                // Reset list profiles list selection to the new profile
-                                let mut p: Vec<String> = config.profiles.keys().cloned().collect();
-                                p.sort();
-                                if let Some(pos) = p.iter().position(|name| name == trimmed) {
-                                    profile_list_state.select(Some(pos));
+                                let mut w: Vec<String> = config.workflows.keys().cloned().collect();
+                                w.sort();
+                                if let Some(pos) = w.iter().position(|name| name == trimmed) {
+                                    workflow_list_state.select(Some(pos));
                                 }
                             }
                             state = AppState::Main;
@@ -665,25 +1006,25 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         _ => {}
                     },
-                    AppState::RenameProfilePrompt { old_name, input } => match key.code {
+                    AppState::RenameWorkflowPrompt { old_name, input } => match key.code {
                         KeyCode::Esc => {
                             state = AppState::Main;
                         }
                         KeyCode::Enter => {
                             let trimmed = input.trim();
                             if !trimmed.is_empty() && trimmed != old_name {
-                                if let Some(apps) = config.profiles.remove(old_name) {
-                                    config.profiles.insert(trimmed.to_string(), apps);
-                                    if config.active_profile == *old_name {
-                                        config.active_profile = trimmed.to_string();
+                                if let Some(mut wf) = config.workflows.remove(old_name) {
+                                    wf.name = trimmed.to_string();
+                                    config.workflows.insert(trimmed.to_string(), wf);
+                                    if config.active_workflow == *old_name {
+                                        config.active_workflow = trimmed.to_string();
                                     }
                                     let _ = save_config(config);
 
-                                    // Reset selection to renamed profile
-                                    let mut p: Vec<String> = config.profiles.keys().cloned().collect();
-                                    p.sort();
-                                    if let Some(pos) = p.iter().position(|name| name == trimmed) {
-                                        profile_list_state.select(Some(pos));
+                                    let mut w: Vec<String> = config.workflows.keys().cloned().collect();
+                                    w.sort();
+                                    if let Some(pos) = w.iter().position(|name| name == trimmed) {
+                                        workflow_list_state.select(Some(pos));
                                     }
                                 }
                             }
@@ -697,23 +1038,23 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         _ => {}
                     },
-                    AppState::CloneProfilePrompt { old_name, input } => match key.code {
+                    AppState::CloneWorkflowPrompt { old_name, input } => match key.code {
                         KeyCode::Esc => {
                             state = AppState::Main;
                         }
                         KeyCode::Enter => {
                             let trimmed = input.trim();
                             if !trimmed.is_empty() && trimmed != old_name {
-                                if let Some(apps) = config.profiles.get(old_name) {
-                                    let apps_clone = apps.clone();
-                                    config.profiles.insert(trimmed.to_string(), apps_clone);
+                                if let Some(wf) = config.workflows.get(old_name) {
+                                    let mut wf_clone = wf.clone();
+                                    wf_clone.name = trimmed.to_string();
+                                    config.workflows.insert(trimmed.to_string(), wf_clone);
                                     let _ = save_config(config);
 
-                                    // Reset selection to cloned profile
-                                    let mut p: Vec<String> = config.profiles.keys().cloned().collect();
-                                    p.sort();
-                                    if let Some(pos) = p.iter().position(|name| name == trimmed) {
-                                        profile_list_state.select(Some(pos));
+                                    let mut w: Vec<String> = config.workflows.keys().cloned().collect();
+                                    w.sort();
+                                    if let Some(pos) = w.iter().position(|name| name == trimmed) {
+                                        workflow_list_state.select(Some(pos));
                                     }
                                 }
                             }
@@ -724,6 +1065,51 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char(c) => {
                             input.push(c);
+                        }
+                        _ => {}
+                    },
+                    AppState::AddStepTypeSelector { selected_idx } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if *selected_idx > 0 {
+                                *selected_idx -= 1;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if *selected_idx < 3 {
+                                *selected_idx += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            match selected_idx {
+                                0 => {
+                                    state = AppState::AddAppSearch {
+                                        search: String::new(),
+                                        selected_idx: 0,
+                                        all_apps: all_desktop_apps.clone(),
+                                    };
+                                }
+                                1 => {
+                                    state = AppState::AddCustomCommandPrompt {
+                                        input: String::new(),
+                                    };
+                                }
+                                2 => {
+                                    state = AppState::AddWaitPrompt {
+                                        input: String::new(),
+                                    };
+                                }
+                                3 => {
+                                    state = AppState::AddNotifyPrompt {
+                                        title_input: String::new(),
+                                        body_input: String::new(),
+                                        active_field: 0,
+                                    };
+                                }
+                                _ => {}
+                            }
                         }
                         _ => {}
                     },
@@ -734,24 +1120,19 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         KeyCode::Enter => {
                             let trimmed = input.trim().to_string();
                             if !trimmed.is_empty() {
-                                if let Some(p_name) = &selected_profile_name {
-                                    let new_len = if let Some(apps) = config.profiles.get_mut(p_name) {
-                                        apps.push(ProfileApp {
-                                            desktop: trimmed,
-                                            workspace: None,
-                                            silent: Some(false),
+                                if let Some(w_name) = &selected_workflow_name {
+                                    let new_len = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps.push(WorkflowStep::RunScript {
+                                            command: trimmed,
+                                            dir: None,
                                         });
-                                        apps.len()
+                                        wf.steps.len()
                                     } else {
-                                        config.profiles.insert(p_name.clone(), vec![ProfileApp {
-                                            desktop: trimmed,
-                                            workspace: None,
-                                            silent: Some(false),
-                                        }]);
                                         1
                                     };
                                     let _ = save_config(config);
-                                    app_list_state.select(Some(new_len - 1));
+                                    active_pane = ActivePane::Steps;
+                                    step_list_state.select(Some(new_len - 1));
                                 }
                             }
                             state = AppState::Main;
@@ -764,20 +1145,23 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         _ => {}
                     },
-                    AppState::EditWorkspacePrompt { input, app_idx } => match key.code {
+                    AppState::AddWaitPrompt { input } => match key.code {
                         KeyCode::Esc => {
                             state = AppState::Main;
                         }
                         KeyCode::Enter => {
-                            if let Some(p_name) = &selected_profile_name {
-                                if let Some(apps) = config.profiles.get_mut(p_name) {
-                                    let trimmed = input.trim();
-                                    apps[*app_idx].workspace = if trimmed.is_empty() {
-                                        None
+                            let trimmed = input.trim();
+                            if let Ok(ms) = trimmed.parse::<u64>() {
+                                if let Some(w_name) = &selected_workflow_name {
+                                    let new_len = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps.push(WorkflowStep::Wait { ms });
+                                        wf.steps.len()
                                     } else {
-                                        Some(trimmed.to_string())
+                                        1
                                     };
                                     let _ = save_config(config);
+                                    active_pane = ActivePane::Steps;
+                                    step_list_state.select(Some(new_len - 1));
                                 }
                             }
                             state = AppState::Main;
@@ -786,11 +1170,53 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             input.pop();
                         }
                         KeyCode::Char(c) => {
-                            input.push(c);
+                            if c.is_ascii_digit() {
+                                input.push(c);
+                            }
                         }
                         _ => {}
                     },
-
+                    AppState::AddNotifyPrompt { title_input, body_input, active_field } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                            *active_field = if *active_field == 0 { 1 } else { 0 };
+                        }
+                        KeyCode::Enter => {
+                            let title = title_input.trim().to_string();
+                            let body = body_input.trim().to_string();
+                            if !title.is_empty() || !body.is_empty() {
+                                if let Some(w_name) = &selected_workflow_name {
+                                    let new_len = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps.push(WorkflowStep::Notify { title, body });
+                                        wf.steps.len()
+                                    } else {
+                                        1
+                                    };
+                                    let _ = save_config(config);
+                                    active_pane = ActivePane::Steps;
+                                    step_list_state.select(Some(new_len - 1));
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            if *active_field == 0 {
+                                title_input.pop();
+                            } else {
+                                body_input.pop();
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if *active_field == 0 {
+                                title_input.push(c);
+                            } else {
+                                body_input.push(c);
+                            }
+                        }
+                        _ => {}
+                    },
                     AppState::AddAppSearch {
                         search,
                         selected_idx,
@@ -816,7 +1242,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             *selected_idx += 1;
                         }
                         KeyCode::Enter => {
-                            // Find the selected app in the filtered list
                             let filtered: Vec<&DesktopEntry> = all_apps
                                 .iter()
                                 .filter(|entry| {
@@ -832,33 +1257,172 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 let clamped_idx = (*selected_idx).min(filtered.len() - 1);
                                 let selected_app = filtered[clamped_idx];
 
-                                if let Some(p_name) = &selected_profile_name {
-                                    let new_len = if let Some(apps) = config.profiles.get_mut(p_name) {
-                                        apps.push(ProfileApp {
+                                if let Some(w_name) = &selected_workflow_name {
+                                    let new_len = if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps.push(WorkflowStep::Launch {
                                             desktop: selected_app.filename.clone(),
                                             workspace: None,
                                             silent: Some(false),
+                                            monitor_cond: None,
                                         });
-                                        apps.len()
+                                        wf.steps.len()
                                     } else {
-                                        config.profiles.insert(p_name.clone(), vec![ProfileApp {
-                                            desktop: selected_app.filename.clone(),
-                                            workspace: None,
-                                            silent: Some(false),
-                                        }]);
                                         1
                                     };
 
                                     let _ = save_config(config);
 
-                                    active_pane = ActivePane::Apps;
-                                    app_list_state.select(Some(new_len - 1));
+                                    active_pane = ActivePane::Steps;
+                                    step_list_state.select(Some(new_len - 1));
                                 }
                             }
                             state = AppState::Main;
                         }
                         _ => {}
                     },
+                    AppState::EditStepLaunch { step_idx, desktop, workspace, silent, monitor_cond, active_field } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            *active_field = (*active_field + 1) % 4;
+                        }
+                        KeyCode::Up => {
+                            *active_field = (*active_field + 3) % 4;
+                        }
+                        KeyCode::Char(' ') if *active_field == 3 => {
+                            *silent = !*silent;
+                        }
+                        KeyCode::Backspace => {
+                            match active_field {
+                                0 => { desktop.pop(); }
+                                1 => { workspace.pop(); }
+                                2 => { monitor_cond.pop(); }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            match active_field {
+                                0 => { desktop.push(c); }
+                                1 => { workspace.push(c); }
+                                2 => { monitor_cond.push(c); }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(w_name) = &selected_workflow_name {
+                                if let Some(wf) = config.workflows.get_mut(w_name) {
+                                    let ws = if workspace.trim().is_empty() { None } else { Some(workspace.trim().to_string()) };
+                                    let mc = if monitor_cond.trim().is_empty() { None } else { Some(monitor_cond.trim().to_string()) };
+                                    wf.steps[*step_idx] = WorkflowStep::Launch {
+                                        desktop: desktop.trim().to_string(),
+                                        workspace: ws,
+                                        silent: Some(*silent),
+                                        monitor_cond: mc,
+                                    };
+                                    let _ = save_config(config);
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        _ => {}
+                    },
+                    AppState::EditStepScript { step_idx, command, dir, active_field } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                            *active_field = if *active_field == 0 { 1 } else { 0 };
+                        }
+                        KeyCode::Backspace => {
+                            if *active_field == 0 { command.pop(); } else { dir.pop(); }
+                        }
+                        KeyCode::Char(c) => {
+                            if *active_field == 0 { command.push(c); } else { dir.push(c); }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(w_name) = &selected_workflow_name {
+                                if let Some(wf) = config.workflows.get_mut(w_name) {
+                                    let d = if dir.trim().is_empty() { None } else { Some(dir.trim().to_string()) };
+                                    wf.steps[*step_idx] = WorkflowStep::RunScript {
+                                        command: command.trim().to_string(),
+                                        dir: d,
+                                    };
+                                    let _ = save_config(config);
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        _ => {}
+                    },
+                    AppState::EditStepWait { step_idx, ms } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            ms.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            if c.is_ascii_digit() {
+                                ms.push(c);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(duration) = ms.trim().parse::<u64>() {
+                                if let Some(w_name) = &selected_workflow_name {
+                                    if let Some(wf) = config.workflows.get_mut(w_name) {
+                                        wf.steps[*step_idx] = WorkflowStep::Wait { ms: duration };
+                                        let _ = save_config(config);
+                                    }
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        _ => {}
+                    },
+                    AppState::EditStepNotify { step_idx, title, body, active_field } => match key.code {
+                        KeyCode::Esc => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                            *active_field = if *active_field == 0 { 1 } else { 0 };
+                        }
+                        KeyCode::Backspace => {
+                            if *active_field == 0 { title.pop(); } else { body.pop(); }
+                        }
+                        KeyCode::Char(c) => {
+                            if *active_field == 0 { title.push(c); } else { body.push(c); }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(w_name) = &selected_workflow_name {
+                                if let Some(wf) = config.workflows.get_mut(w_name) {
+                                    wf.steps[*step_idx] = WorkflowStep::Notify {
+                                        title: title.trim().to_string(),
+                                        body: body.trim().to_string(),
+                                    };
+                                    let _ = save_config(config);
+                                }
+                            }
+                            state = AppState::Main;
+                        }
+                        _ => {}
+                    },
+                    AppState::HealthCheckReport { reports, scroll_idx } => match key.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            state = AppState::Main;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if *scroll_idx > 0 {
+                                *scroll_idx -= 1;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !reports.is_empty() && *scroll_idx + 1 < reports.len() {
+                                *scroll_idx += 1;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

@@ -1,22 +1,23 @@
 # hyprlaunch
 
-`hyprlaunch` is a simple, profile-based application launcher for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive terminal user interface (TUI) to define, configure, and reorder groups of applications ("profiles") that you want to launch together.
+`hyprlaunch` is a terminal-based **Workflow Orchestrator** for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive Terminal User Interface (TUI) to define, configure, and reorder structured sequences of steps ("workflows") that you want to execute together.
 
-Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mappings, custom shell scripts/commands, and focus settings for your favorite environments (e.g., *Work*, *Development*, *Gaming*, or *Default* startup apps) and launch them concurrently.
+Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mapping rules, custom shell scripts/commands, notification alerts, and delay sequences for your favorite environments (e.g., *Deep Coding*, *Content Creation*, *Meeting Prep*, or *Default* workspace setup) and launch them sequentially.
 
 ---
 
 ## Features
 
-- **Interactive TUI Configurator**: Quickly create, clone, rename, and edit profiles and associate them with apps.
-- **Auto-Detect System Desktop Entries**: Scans your local and system applications (`/usr/share/applications` and `~/.local/share/applications`), offering search-as-you-type to easily add programs.
-- **Custom Commands & Scripts Support**: Add raw shell commands (e.g. `waybar` or a custom bash script) directly to profiles instead of only `.desktop` applications.
-- **Workspace Mapping**: Assign applications to launch on specific Hyprland workspaces (e.g. `1`, `2`, or `silent`).
+- **Interactive TUI Dashboard**: Keyboard-driven sidebar and editor panes to manage workflows and re-arrange execution order.
+- **Sequential Execution Pipeline**: Supports four distinct step types:
+  1. **Launch App**: Starts a `.desktop` application or raw binary.
+  2. **Run Script**: Executes shell commands and scripts in optional target directories.
+  3. **Wait**: Halts execution for a specified duration in milliseconds.
+  4. **Notify**: Triggers a desktop notification to indicate progress or completions.
+- **Dynamic Monitor Workspace Conditions**: Target workspaces based on connected monitors using the `HDMI-A-1?3:1` syntax (e.g., if monitor `HDMI-A-1` is connected, place the window on workspace `3`, otherwise fall back to workspace `1`).
 - **Silent Launching**: Use the Hyprland `silent` execution flag to load applications in the background without stealing active window focus.
-- **Startup Order Control**: Reorder execution sequences directly inside the TUI.
-- **Test Launching**: Instantly test run individual applications or custom commands directly from the editor pane.
-- **Active Profile Selection**: Toggle your default active startup profile directly in the TUI sidebar.
-- **Flexible Launching**: Seamlessly integrates with Hyprland's startup config or keybindings.
+- **Integrated Health Check Scanner**: Press `v` to audit workflows for missing desktop applications, invalid script paths, excessive wait delays, and empty notification headers.
+- **Automatic Legacy Migration**: Automatically upgrades old profile-based configurations (`~/.config/hyprlaunch/config.json`) to the workflows format on startup.
 
 ---
 
@@ -52,39 +53,38 @@ hyprlaunch tui
 ```
 
 #### TUI Keyboard Shortcuts
-- **Profile Navigation (Left Pane)**:
-  - `Up` / `Down` or `k` / `j`: Navigate profiles list
-  - `Space`: Set the selected profile as the default active startup profile (indicated by a `★`)
-  - `Enter`: Save and launch the selected profile immediately (exits TUI)
-  - `c`: Create a new profile
-  - `r`: Rename the selected profile
-  - `y`: Duplicate/Clone the selected profile
-  - `d`: Delete the selected profile
-  - `Tab` / `Right` / `l`: Switch pane to edit applications in the selected profile
-  - `q` / `Esc`: Quit the application
-- **Application Navigation (Right Pane)**:
-  - `Tab` / `Left` / `h`: Switch back to the profile list
-  - `a`: Add a new desktop application to the profile (opens a search overlay of system applications)
-  - `c`: Add a custom shell command or bash script to the profile
-  - `d` / `Delete`: Remove the selected application/command from the profile
-  - `w`: Set targeted workspace rule (leave empty for default workspace behavior)
-  - `s`: Toggle launcher silent execution (`[Silent]` flag)
-  - `Enter`: Test launch only the selected application/command immediately in the background
-  - `Shift+Up` / `Shift+Down`: Move the selected application up or down in the startup sequence
+- **Workflow Navigation (Left Pane)**:
+  - `Up` / `Down` or `k` / `j`: Navigate workflows list.
+  - `Space`: Set the selected workflow as the default active startup workflow (indicated by a `★`).
+  - `Enter`: Save and launch the selected workflow immediately (exits TUI).
+  - `c`: Create a new workflow.
+  - `r`: Rename the selected workflow.
+  - `y`: Duplicate/Clone the selected workflow.
+  - `d`: Delete the selected workflow.
+  - `v`: Run health audit checks on the selected workflow steps.
+  - `Tab` / `Right` / `l`: Switch pane to edit steps in the selected workflow.
+  - `q` / `Esc`: Quit the application.
+- **Step Navigation & Editing (Right Pane)**:
+  - `Tab` / `Left` / `h`: Switch back to the workflow list.
+  - `a`: Add a new step to the workflow (opens a selector popup for step types).
+  - `e`: Edit all parameters of the selected step (opens a multi-field editor).
+  - `d` / `Delete`: Remove the selected step.
+  - `Enter`: Test launch / run only the selected step immediately in the background.
+  - `Shift+Up` / `Shift+Down`: Move the selected step up or down in the startup sequence.
 
 ---
 
 ### Non-Interactive mode
-If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hyprlaunch` will automatically launch all applications registered under the **currently active profile** (marked with `★`) and then exit.
+If executed without arguments in a non-interactive environment (such as when called from `hyprland.conf`), `hyprlaunch` will automatically launch the **currently active workflow** (marked with `★`) and then exit.
 
-#### Launching specific profiles via CLI
-You can launch a specific profile by name directly from your terminal or shell scripts:
+#### Launching specific workflows via CLI
+You can launch a specific workflow by name directly from your terminal or shell scripts:
 ```bash
-hyprlaunch <profile_name>
+hyprlaunch <workflow_name>
 ```
 
-#### List profiles
-Print all configured profiles (the active profile is highlighted):
+#### List workflows
+Print all configured workflows (the active workflow is highlighted):
 ```bash
 hyprlaunch list
 ```
@@ -93,7 +93,7 @@ hyprlaunch list
 
 ## Configuration File
 
-Your profiles and settings are stored in JSON format at:
+Your workflows and settings are stored in JSON format at:
 `~/.config/hyprlaunch/config.json`
 
 ### Environment Variable Override
@@ -106,37 +106,40 @@ export HYPRLAUNCH_CONFIG="$HOME/custom/path/config.json"
 Here is how your `config.json` might look:
 ```json
 {
-  "active_profile": "work",
-  "profiles": {
-    "default": [
-      {
-        "desktop": "firefox.desktop",
-        "workspace": "1",
-        "silent": false
-      },
-      {
-        "desktop": "kitty.desktop",
-        "workspace": "2",
-        "silent": true
-      }
-    ],
-    "work": [
-      {
-        "desktop": "slack.desktop",
-        "workspace": "3",
-        "silent": false
-      },
-      {
-        "desktop": "waybar",
-        "workspace": null,
-        "silent": false
-      },
-      {
-        "desktop": "org.codeberg.dnkl.foot.desktop",
-        "workspace": "1",
-        "silent": false
-      }
-    ]
+  "active_workflow": "coding",
+  "workflows": {
+    "coding": {
+      "name": "coding",
+      "steps": [
+        {
+          "type": "notify",
+          "title": "Developer Workspace",
+          "body": "Booting development environment..."
+        },
+        {
+          "type": "launch",
+          "desktop": "firefox.desktop",
+          "workspace": "1",
+          "silent": false
+        },
+        {
+          "type": "script",
+          "command": "git pull",
+          "dir": "/home/user/projects/hyprlaunch"
+        },
+        {
+          "type": "wait",
+          "ms": 500
+        },
+        {
+          "type": "launch",
+          "desktop": "kitty.desktop",
+          "workspace": "2",
+          "silent": true,
+          "monitor_cond": "HDMI-A-1?3:2"
+        }
+      ]
+    }
   }
 }
 ```
@@ -145,20 +148,20 @@ Here is how your `config.json` might look:
 
 ## Integration with Hyprland
 
-To automatically launch your active profile when you log into Hyprland, add the following line to your `~/.config/hypr/hyprland.conf`:
+To automatically launch your active workflow when you log into Hyprland, add the following line to your `~/.config/hypr/hyprland.conf`:
 
 ```ini
 exec-once = hyprlaunch
 ```
 
-You can also create keybindings to easily switch profiles:
+You can also create keybindings to easily switch workflows:
 
 ```ini
-# Switch to and launch the "gaming" profile
+# Switch to and launch the "gaming" workflow
 bind = $mainMod, G, exec, hyprlaunch gaming
 
-# Switch to and launch the "work" profile
-bind = $mainMod, W, exec, hyprlaunch work
+# Switch to and launch the "coding" workflow
+bind = $mainMod, C, exec, hyprlaunch coding
 ```
 
 ---
