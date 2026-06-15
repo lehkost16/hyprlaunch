@@ -40,16 +40,12 @@ enum AppState {
         input: String,
         app_idx: usize,
     },
-    EditDelayPrompt {
-        input: String,
-        app_idx: usize,
-    },
 }
 
 pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load configuration
     let mut config = load_config()?;
-    
+
     // 2. Scan all system desktop entries once
     let all_desktop_apps = scan_desktop_entries();
 
@@ -135,7 +131,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
         let selected_p_name = selected_profile_name.clone();
         let current_apps_clone = current_apps.clone();
         let cur_profiles = current_profiles.clone();
-        
+
         terminal.draw(|f| {
             let size = f.size();
 
@@ -155,7 +151,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 ActivePane::Profiles => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ActivePane::Apps => Style::default().fg(Color::DarkGray),
             };
-            
+
             let profile_items: Vec<ListItem> = cur_profiles
                 .iter()
                 .map(|p| {
@@ -226,11 +222,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         } else {
                             ""
                         };
-                        let delay_str = app
-                            .delay_ms
-                            .map(|d| format!(" | Delay: {}ms", d))
-                            .unwrap_or_else(|| "".to_string());
-                        
+
                         let exists = all_desktop_apps.iter().any(|e| e.filename == app.desktop);
                         let (prefix, style) = if exists {
                             ("  ", Style::default())
@@ -239,8 +231,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         };
 
                         ListItem::new(format!(
-                            "{}{}   ({}{}{})",
-                            prefix, app.desktop, ws_str, silent_str, delay_str
+                            "{}{}   ({}{})",
+                            prefix, app.desktop, ws_str, silent_str
                         )).style(style)
                     })
                     .collect();
@@ -268,24 +260,22 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 .borders(Borders::ALL)
                 .title(" Application Details ")
                 .border_style(Style::default().fg(Color::DarkGray));
-                
+
             let mut details_lines = Vec::new();
             if let (Some(apps), Some(idx)) = (selected_p_name.as_ref().and_then(|n| config.profiles.get(n)), app_list_state.selected()) {
                 if let Some(app) = apps.get(idx) {
                     if let Some(entry) = all_desktop_apps.iter().find(|e| e.filename == app.desktop) {
                         let ws_str = app.workspace.as_ref().map(|w| w.as_str()).unwrap_or("Default");
                         let silent_str = if app.silent.unwrap_or(false) { "Yes" } else { "No" };
-                        let delay_str = app.delay_ms.map(|d| format!("{} ms", d)).unwrap_or_else(|| "0 ms".to_string());
                         let exec_str = entry.exec.join(" ");
                         let path_str = entry.path.as_deref().unwrap_or("None");
-                        
+
                         let desktop_path = entry.file_path.to_string_lossy().into_owned();
                         details_lines.push(Line::from(vec![Span::raw(" Name:         "), Span::styled(&entry.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]));
                         details_lines.push(Line::from(vec![Span::raw(" Desktop File: "), Span::styled(desktop_path, Style::default().fg(Color::Gray))]));
                         details_lines.push(Line::from(vec![Span::raw(" Command:      "), Span::styled(exec_str, Style::default().fg(Color::Cyan))]));
                         details_lines.push(Line::from(vec![Span::raw(" Working Dir:  "), Span::raw(path_str)]));
                         details_lines.push(Line::from(vec![Span::raw(" Workspace:    "), Span::styled(ws_str, Style::default().fg(Color::Magenta))]));
-                        details_lines.push(Line::from(vec![Span::raw(" Delay:        "), Span::raw(delay_str)]));
                         details_lines.push(Line::from(vec![Span::raw(" Silent Run:   "), Span::raw(silent_str)]));
                     } else {
                         details_lines.push(Line::from(vec![Span::styled(format!(" ⚠️ Unknown Application ({})", app.desktop), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]));
@@ -297,7 +287,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             } else {
                 details_lines.push(Line::from(" Select an application to view details."));
             };
-            
+
             let details_paragraph = Paragraph::new(details_lines)
                 .block(details_block);
             f.render_widget(details_paragraph, right_chunks[1]);
@@ -308,7 +298,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     "Enter: Launch | c: Create | r: Rename | d: Delete | Tab: Edit Apps | q: Quit"
                 }
                 ActivePane::Apps => {
-                    "Tab: Back | a: Add App | d: Delete App | w: Workspace | s: Toggle Silent | t: Delay | Shift+Up/Down: Move"
+                    "Tab: Back | a: Add App | d: Delete App | w: Workspace | s: Toggle Silent | Shift+Up/Down: Move"
                 }
             };
             let help_paragraph = Paragraph::new(help_text)
@@ -353,18 +343,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         );
                     f.render_widget(input_block, popup_area);
                 }
-                AppState::EditDelayPrompt { input, .. } => {
-                    let popup_area = centered_rect(50, 20, size);
-                    f.render_widget(Clear, popup_area);
-                    let input_block = Paragraph::new(format!("\n  Delay in ms: {}", input))
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .title(" Set Startup Delay ")
-                                .border_style(Style::default().fg(Color::Yellow)),
-                        );
-                    f.render_widget(input_block, popup_area);
-                }
+
                 AppState::AddAppSearch {
                     search,
                     selected_idx,
@@ -560,7 +539,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         } else {
                                             false
                                         };
-                                        
+
                                         if apps_empty {
                                             active_pane = ActivePane::Profiles;
                                         }
@@ -576,18 +555,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         };
                                     }
                                 }
-                                KeyCode::Char('t') => {
-                                    if let Some(idx) = app_list_state.selected() {
-                                        let current_delay = current_apps[idx]
-                                            .delay_ms
-                                            .map(|d| d.to_string())
-                                            .unwrap_or_default();
-                                        state = AppState::EditDelayPrompt {
-                                            input: current_delay,
-                                            app_idx: idx,
-                                        };
-                                    }
-                                }
+
                                 KeyCode::Char('s') => {
                                     if let (Some(p_name), Some(idx)) = (&selected_profile_name, app_list_state.selected()) {
                                         if let Some(apps) = config.profiles.get_mut(p_name) {
@@ -612,7 +580,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 config.profiles.entry(trimmed.to_string()).or_default();
                                 config.active_profile = trimmed.to_string();
                                 let _ = save_config(config);
-                                
+
                                 // Reset list profiles list selection to the new profile
                                 let mut p: Vec<String> = config.profiles.keys().cloned().collect();
                                 p.sort();
@@ -643,7 +611,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         config.active_profile = trimmed.to_string();
                                     }
                                     let _ = save_config(config);
-                                    
+
                                     // Reset selection to renamed profile
                                     let mut p: Vec<String> = config.profiles.keys().cloned().collect();
                                     p.sort();
@@ -688,30 +656,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         _ => {}
                     },
-                    AppState::EditDelayPrompt { input, app_idx } => match key.code {
-                        KeyCode::Esc => {
-                            state = AppState::Main;
-                        }
-                        KeyCode::Enter => {
-                            if let Some(p_name) = &selected_profile_name {
-                                if let Some(apps) = config.profiles.get_mut(p_name) {
-                                    let trimmed = input.trim();
-                                    apps[*app_idx].delay_ms = trimmed.parse::<u64>().ok().filter(|d| *d > 0);
-                                    let _ = save_config(config);
-                                }
-                            }
-                            state = AppState::Main;
-                        }
-                        KeyCode::Backspace => {
-                            input.pop();
-                        }
-                        KeyCode::Char(c) => {
-                            if c.is_ascii_digit() {
-                                input.push(c);
-                            }
-                        }
-                        _ => {}
-                    },
+
                     AppState::AddAppSearch {
                         search,
                         selected_idx,
@@ -759,7 +704,6 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                             desktop: selected_app.filename.clone(),
                                             workspace: None,
                                             silent: Some(false),
-                                            delay_ms: Some(0),
                                         });
                                         apps.len()
                                     } else {
@@ -767,13 +711,12 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                             desktop: selected_app.filename.clone(),
                                             workspace: None,
                                             silent: Some(false),
-                                            delay_ms: Some(0),
                                         }]);
                                         1
                                     };
-                                    
+
                                     let _ = save_config(config);
-                                    
+
                                     active_pane = ActivePane::Apps;
                                     app_list_state.select(Some(new_len - 1));
                                 }

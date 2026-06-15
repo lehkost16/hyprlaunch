@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesktopEntry {
     pub filename: String,
     pub file_path: std::path::PathBuf,
@@ -15,7 +17,7 @@ pub struct DesktopEntry {
 
 pub fn get_desktop_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    
+
     // 1. User applications: $XDG_DATA_HOME/applications or ~/.local/share/applications
     if let Ok(val) = std::env::var("XDG_DATA_HOME") {
         if !val.is_empty() {
@@ -24,7 +26,7 @@ pub fn get_desktop_search_paths() -> Vec<PathBuf> {
     } else if let Ok(home) = std::env::var("HOME") {
         paths.push(Path::new(&home).join(".local/share/applications"));
     }
-    
+
     // 2. System applications: $XDG_DATA_DIRS/applications or standard dirs
     if let Ok(val) = std::env::var("XDG_DATA_DIRS") {
         for dir in val.split(':') {
@@ -36,7 +38,7 @@ pub fn get_desktop_search_paths() -> Vec<PathBuf> {
         paths.push(PathBuf::from("/usr/local/share/applications"));
         paths.push(PathBuf::from("/usr/share/applications"));
     }
-    
+
     paths
 }
 
@@ -44,7 +46,7 @@ pub fn scan_desktop_entries() -> Vec<DesktopEntry> {
     let search_paths = get_desktop_search_paths();
     let mut entries = Vec::new();
     let mut seen_filenames = HashSet::new();
-    
+
     for path in search_paths {
         if !path.is_dir() {
             continue;
@@ -61,7 +63,7 @@ pub fn scan_desktop_entries() -> Vec<DesktopEntry> {
                                     continue;
                                 }
                                 seen_filenames.insert(filename_string.clone());
-                                
+
                                 if let Some(desktop_entry) = parse_desktop_file(&file_path) {
                                     if !desktop_entry.hidden {
                                         entries.push(desktop_entry);
@@ -74,7 +76,7 @@ pub fn scan_desktop_entries() -> Vec<DesktopEntry> {
             }
         }
     }
-    
+
     // Sort alphabetically by name
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     entries
@@ -85,21 +87,21 @@ pub fn find_desktop_file(name: &str) -> Option<PathBuf> {
     if path.is_absolute() && path.exists() {
         return Some(path.to_path_buf());
     }
-    
+
     let search_paths = get_desktop_search_paths();
     let target_filename = if name.ends_with(".desktop") {
         name.to_string()
     } else {
         format!("{}.desktop", name)
     };
-    
+
     for dir in search_paths {
         let file_path = dir.join(&target_filename);
         if file_path.is_file() {
             return Some(file_path);
         }
     }
-    
+
     None
 }
 
@@ -112,16 +114,16 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
     let mut path = None;
     let mut no_display = false;
     let mut hidden = false;
-    
+
     let filename = file_path.file_name()?.to_string_lossy().into_owned();
-    
+
     for line in reader.lines() {
         let line = line.ok()?;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        
+
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             if trimmed == "[Desktop Entry]" {
                 in_desktop_entry = true;
@@ -130,12 +132,12 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
             }
             continue;
         }
-        
+
         if in_desktop_entry {
             if let Some(pos) = trimmed.find('=') {
                 let key = trimmed[..pos].trim();
                 let val = trimmed[pos + 1..].trim();
-                
+
                 if key == "Name" {
                     name = Some(val.to_string());
                 } else if key == "Exec" {
@@ -150,13 +152,13 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
             }
         }
     }
-    
+
     let exec_str = exec?;
     let exec_args = parse_exec_line(&exec_str)?;
     let name_str = name.unwrap_or_else(|| {
         filename.strip_suffix(".desktop").unwrap_or(&filename).to_string()
     });
-    
+
     Some(DesktopEntry {
         filename,
         file_path: file_path.to_path_buf(),
@@ -173,7 +175,7 @@ pub fn parse_exec_line(cmd_line: &str) -> Option<Vec<String>> {
     let mut in_double_quote = false;
     let mut in_single_quote = false;
     let mut escaped = false;
-    
+
     for c in cmd_line.chars() {
         if escaped {
             current.push(c);
@@ -196,13 +198,13 @@ pub fn parse_exec_line(cmd_line: &str) -> Option<Vec<String>> {
     if !current.is_empty() {
         args.push(current);
     }
-    
+
     let placeholders = ["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k"];
     let filtered_args: Vec<String> = args
         .into_iter()
         .filter(|arg| !placeholders.contains(&arg.as_str()))
         .collect();
-        
+
     if filtered_args.is_empty() {
         None
     } else {

@@ -11,8 +11,6 @@ pub struct ProfileApp {
     pub workspace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub silent: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delay_ms: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -31,13 +29,11 @@ impl Default for Config {
                     desktop: "firefox.desktop".to_string(),
                     workspace: Some("1".to_string()),
                     silent: Some(false),
-                    delay_ms: Some(0),
                 },
                 ProfileApp {
                     desktop: "kitty.desktop".to_string(),
                     workspace: Some("2".to_string()),
                     silent: Some(true),
-                    delay_ms: Some(300),
                 },
             ],
         );
@@ -64,7 +60,7 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
         save_config(&config)?;
         return Ok(config);
     }
-    
+
     let mut file = File::open(path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;

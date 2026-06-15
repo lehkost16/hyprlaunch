@@ -5,6 +5,7 @@ pub mod config;
 pub mod desktop;
 pub mod launcher;
 pub mod tui;
+pub mod gui;
 
 fn print_help() {
     println!("hyprlaunch - A simple, profile-based application launcher for Hyprland");
@@ -13,6 +14,7 @@ fn print_help() {
     println!("  hyprlaunch                 Open the interactive configuration TUI (if in terminal)");
     println!("                             or launch the active profile (if non-interactive)");
     println!("  hyprlaunch tui             Explicitly open the configuration TUI");
+    println!("  hyprlaunch gui             Open the native desktop configuration GUI");
     println!("  hyprlaunch list            List all available profile names");
     println!("  hyprlaunch <profile_name>  Launch applications for the specified profile");
     println!("  hyprlaunch --help | -h     Print this help message");
@@ -41,6 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args[0].as_str() {
             "tui" => {
                 tui::run_tui()?;
+            }
+            "gui" => {
+                gui::run_gui()?;
             }
             "list" => {
                 let cfg = config::load_config()?;
