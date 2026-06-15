@@ -3,6 +3,16 @@ use crate::desktop::{scan_desktop_entries, DesktopEntry, find_desktop_file};
 use crate::launcher::{launch_workflow, execute_step};
 use crate::health::validate_workflow_steps;
 
+// Tokyo Night color palette constants
+const TN_PRIMARY: Color = Color::Rgb(122, 162, 247); // soft blue (#7aa2f7)
+const TN_ACTIVE: Color = Color::Rgb(125, 207, 255);  // cyan (#7dcfff)
+const TN_INACTIVE: Color = Color::Rgb(86, 95, 137);  // slate blue (#565f89)
+const TN_WARNING: Color = Color::Rgb(224, 175, 104); // yellow (#e0af68)
+const TN_ERROR: Color = Color::Rgb(247, 118, 142);   // red (#f7768e)
+const TN_SUCCESS: Color = Color::Rgb(158, 206, 106); // green (#9ece6a)
+const TN_TEXT: Color = Color::Rgb(192, 202, 245);    // foreground (#c0caf5)
+const TN_HIGHLIGHT: Color = Color::Rgb(187, 154, 247); // purple (#bb9af7)
+
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
@@ -63,7 +73,10 @@ enum AppState {
         desktop: String,
         workspace: String,
         silent: bool,
-        monitor_cond: String,
+        monitor_list: Vec<String>,
+        monitor_idx: usize,
+        ws_true: String,
+        ws_false: String,
         active_field: usize,
     },
     EditStepScript {
@@ -194,8 +207,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
             // Left Pane: Workflows
             let left_border_style = match active_pane {
-                ActivePane::Workflows => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ActivePane::Steps => Style::default().fg(Color::DarkGray),
+                ActivePane::Workflows => Style::default().fg(TN_ACTIVE).add_modifier(Modifier::BOLD),
+                ActivePane::Steps => Style::default().fg(TN_INACTIVE),
             };
 
             let workflow_items: Vec<ListItem> = cur_workflows
@@ -219,7 +232,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                 )
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Cyan)
+                        .bg(TN_ACTIVE)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD),
                 )
@@ -235,8 +248,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
             // Right Pane: Workflow Detail (Steps)
             let right_border_style = match active_pane {
-                ActivePane::Steps => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ActivePane::Workflows => Style::default().fg(Color::DarkGray),
+                ActivePane::Steps => Style::default().fg(TN_ACTIVE).add_modifier(Modifier::BOLD),
+                ActivePane::Workflows => Style::default().fg(TN_INACTIVE),
             };
 
             let right_title = match &selected_w_name {
@@ -252,7 +265,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             .title(right_title.as_str())
                             .border_style(right_border_style),
                     )
-                    .style(Style::default().fg(Color::DarkGray));
+                    .style(Style::default().fg(TN_INACTIVE));
                 f.render_widget(placeholder, right_chunks[0]);
             } else {
                 let step_items: Vec<ListItem> = current_steps_clone
@@ -292,7 +305,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 let (prefix, style) = if exists {
                                     ("🚀 ", Style::default())
                                 } else {
-                                    ("⚠️ ", Style::default().fg(Color::Yellow))
+                                    ("⚠️ ", Style::default().fg(TN_WARNING))
                                 };
                                 
                                 ListItem::new(format!(
@@ -316,13 +329,13 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 ListItem::new(format!(
                                     "⚙️  {}. Script: {}{}",
                                     step_num, cmd_short, dir_str
-                                )).style(Style::default().fg(Color::LightCyan))
+                                )).style(Style::default().fg(TN_PRIMARY))
                             }
                             WorkflowStep::Wait { ms } => {
                                 ListItem::new(format!(
                                     "⏳ {}. Wait: {} ms",
                                     step_num, ms
-                                )).style(Style::default().fg(Color::LightYellow))
+                                )).style(Style::default().fg(TN_WARNING))
                             }
                             WorkflowStep::Notify { title, body } => {
                                 let body_short = if body.len() > 30 {
@@ -333,7 +346,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 ListItem::new(format!(
                                     "🔔 {}. Notify: \"{}\" - {}",
                                     step_num, title, body_short
-                                )).style(Style::default().fg(Color::LightMagenta))
+                                )).style(Style::default().fg(TN_HIGHLIGHT))
                             }
                         }
                     })
@@ -348,7 +361,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     )
                     .highlight_style(
                         Style::default()
-                            .bg(Color::Cyan)
+                            .bg(TN_ACTIVE)
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     )
@@ -361,7 +374,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
             let details_block = Block::default()
                 .borders(Borders::ALL)
                 .title(" Step Details ")
-                .border_style(Style::default().fg(Color::DarkGray));
+                .border_style(Style::default().fg(TN_INACTIVE));
 
             let mut details_lines = Vec::new();
             if let Some(idx) = step_list_state.selected() {
@@ -379,18 +392,18 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                 "✔ Custom Command / Binary"
                             };
                             let status_style = if is_desktop && find_desktop_file(desktop).is_none() {
-                                Style::default().fg(Color::Red)
+                                Style::default().fg(TN_ERROR)
                             } else {
-                                Style::default().fg(Color::Green)
+                                Style::default().fg(TN_SUCCESS)
                             };
 
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Type:    "),
-                                Span::styled("Launch Application", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                                Span::styled("Launch Application", Style::default().fg(TN_TEXT).add_modifier(Modifier::BOLD))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Target:  "),
-                                Span::styled(desktop, Style::default().fg(Color::Cyan))
+                                Span::styled(desktop, Style::default().fg(TN_ACTIVE))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Config:  "),
@@ -409,11 +422,11 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         WorkflowStep::RunScript { command, dir } => {
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Type:    "),
-                                Span::styled("Run Shell Script / Command", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                                Span::styled("Run Shell Script / Command", Style::default().fg(TN_TEXT).add_modifier(Modifier::BOLD))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Command: "),
-                                Span::styled(command, Style::default().fg(Color::Cyan))
+                                Span::styled(command, Style::default().fg(TN_ACTIVE))
                             ]));
                             if let Some(d) = dir {
                                 details_lines.push(Line::from(vec![
@@ -425,21 +438,21 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         WorkflowStep::Wait { ms } => {
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Type:    "),
-                                Span::styled("Wait / Sleep Delay", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                                Span::styled("Wait / Sleep Delay", Style::default().fg(TN_TEXT).add_modifier(Modifier::BOLD))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Delay:   "),
-                                Span::styled(format!("{} milliseconds", ms), Style::default().fg(Color::Cyan))
+                                Span::styled(format!("{} milliseconds", ms), Style::default().fg(TN_ACTIVE))
                             ]));
                         }
                         WorkflowStep::Notify { title, body } => {
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Type:    "),
-                                Span::styled("Desktop Notification", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                                Span::styled("Desktop Notification", Style::default().fg(TN_TEXT).add_modifier(Modifier::BOLD))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Title:   "),
-                                Span::styled(title, Style::default().fg(Color::Cyan))
+                                Span::styled(title, Style::default().fg(TN_ACTIVE))
                             ]));
                             details_lines.push(Line::from(vec![
                                 Span::raw(" Body:    "),
@@ -481,7 +494,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Create New Workflow ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -493,7 +506,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Rename Workflow ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -505,7 +518,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Duplicate Workflow ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -521,7 +534,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     ];
                     let items: Vec<ListItem> = options.iter().enumerate().map(|(i, opt)| {
                         let style = if i == *selected_idx {
-                            Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                            Style::default().bg(TN_ACTIVE).fg(Color::Black).add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         };
@@ -533,7 +546,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Select Step Type to Add ")
-                                .border_style(Style::default().fg(Color::Yellow))
+                                .border_style(Style::default().fg(TN_WARNING))
                         );
                     f.render_widget(list, popup_area);
                 }
@@ -545,7 +558,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Add Custom Window Command ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -557,7 +570,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Add Custom Command / Script ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -569,7 +582,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Add Wait / Delay Step ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -580,7 +593,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .title(" Add System Notification ")
-                        .border_style(Style::default().fg(Color::Yellow));
+                        .border_style(Style::default().fg(TN_WARNING));
 
                     let inner = block.inner(popup_area);
                     f.render_widget(block, popup_area);
@@ -591,14 +604,14 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .split(inner);
 
                     let title_border = if *active_field == 0 {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(TN_INACTIVE)
                     };
                     let body_border = if *active_field == 1 {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(TN_INACTIVE)
                     };
 
                     let p_title = Paragraph::new(format!(" {}", title_input))
@@ -610,7 +623,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     f.render_widget(p_body, chunks[1]);
 
                     let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Add | Esc: Cancel")
-                        .style(Style::default().fg(Color::DarkGray));
+                        .style(Style::default().fg(TN_INACTIVE));
                     f.render_widget(help, chunks[2]);
                 }
                 AppState::AddAppSearch {
@@ -630,7 +643,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         Block::default()
                             .borders(Borders::ALL)
                             .title(" Search Applications ")
-                            .border_style(Style::default().fg(Color::Green)),
+                            .border_style(Style::default().fg(TN_SUCCESS)),
                     );
                     f.render_widget(search_bar, overlay_chunks[0]);
 
@@ -663,7 +676,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .block(Block::default().borders(Borders::ALL).title(" Match Results "))
                         .highlight_style(
                             Style::default()
-                                .bg(Color::Green)
+                                .bg(TN_SUCCESS)
                                 .fg(Color::Black)
                                 .add_modifier(Modifier::BOLD),
                         )
@@ -671,14 +684,24 @@ fn run_event_loop<B: ratatui::backend::Backend>(
 
                     f.render_stateful_widget(app_search_list, overlay_chunks[1], &mut list_state);
                 }
-                AppState::EditStepLaunch { desktop, workspace, silent, monitor_cond, active_field, .. } => {
-                    let popup_area = centered_rect(70, 65, size);
+                AppState::EditStepLaunch {
+                    step_idx: _,
+                    desktop,
+                    workspace,
+                    silent,
+                    monitor_list,
+                    monitor_idx,
+                    ws_true,
+                    ws_false,
+                    active_field,
+                } => {
+                    let popup_area = centered_rect(70, 75, size);
                     f.render_widget(Clear, popup_area);
 
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .title(" Edit Launch Step ")
-                        .border_style(Style::default().fg(Color::Yellow));
+                        .border_style(Style::default().fg(TN_WARNING));
 
                     let inner = block.inner(popup_area);
                     f.render_widget(block, popup_area);
@@ -686,40 +709,53 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(3), // Desktop/Command
+                            Constraint::Length(3), // Desktop
                             Constraint::Length(3), // Workspace
-                            Constraint::Length(3), // Monitor Cond
+                            Constraint::Length(3), // Monitor (Selectable)
+                            Constraint::Length(3), // WS if Connected
+                            Constraint::Length(3), // WS if Not Connected
                             Constraint::Length(3), // Silent
                             Constraint::Min(1)
                         ])
                         .split(inner);
 
                     let styles = [
-                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
-                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
-                        if *active_field == 2 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
-                        if *active_field == 3 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 0 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 1 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 2 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 3 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 4 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 5 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
                     ];
 
                     let p_desktop = Paragraph::new(format!(" {}", desktop))
                         .block(Block::default().borders(Borders::ALL).title(" Desktop File / Command ").border_style(styles[0]));
                     let p_ws = Paragraph::new(format!(" {}", workspace))
                         .block(Block::default().borders(Borders::ALL).title(" Target Workspace (optional) ").border_style(styles[1]));
-                    let p_mc = Paragraph::new(format!(" {}", monitor_cond))
-                        .block(Block::default().borders(Borders::ALL).title(" Monitor Condition (e.g. HDMI-A-1?3:1) ").border_style(styles[2]));
+                    
+                    let monitor_val = &monitor_list[*monitor_idx];
+                    let p_monitor = Paragraph::new(format!("  {} (Press Space or Left/Right to Cycle)", monitor_val))
+                        .block(Block::default().borders(Borders::ALL).title(" Monitor Condition (Select connected monitor) ").border_style(styles[2]));
+                        
+                    let p_wstrue = Paragraph::new(format!(" {}", ws_true))
+                        .block(Block::default().borders(Borders::ALL).title(" Workspace if Monitor Connected ").border_style(styles[3]));
+                    let p_wsfalse = Paragraph::new(format!(" {}", ws_false))
+                        .block(Block::default().borders(Borders::ALL).title(" Workspace if Monitor NOT Connected ").border_style(styles[4]));
 
                     let silent_val = if *silent { "[X] Enabled" } else { "[ ] Disabled" };
                     let p_silent = Paragraph::new(format!("  {} (Press Space to Toggle)", silent_val))
-                        .block(Block::default().borders(Borders::ALL).title(" Silent Run ").border_style(styles[3]));
+                        .block(Block::default().borders(Borders::ALL).title(" Silent Run ").border_style(styles[5]));
 
                     f.render_widget(p_desktop, chunks[0]);
                     f.render_widget(p_ws, chunks[1]);
-                    f.render_widget(p_mc, chunks[2]);
-                    f.render_widget(p_silent, chunks[3]);
+                    f.render_widget(p_monitor, chunks[2]);
+                    f.render_widget(p_wstrue, chunks[3]);
+                    f.render_widget(p_wsfalse, chunks[4]);
+                    f.render_widget(p_silent, chunks[5]);
 
-                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
-                        .style(Style::default().fg(Color::DarkGray));
-                    f.render_widget(help, chunks[4]);
+                    let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Space/Left/Right: Cycle Monitor | Enter: Save | Esc: Cancel")
+                        .style(Style::default().fg(TN_INACTIVE));
+                    f.render_widget(help, chunks[6]);
                 }
                 AppState::EditStepScript { command, dir, active_field, .. } => {
                     let popup_area = centered_rect(70, 45, size);
@@ -728,7 +764,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .title(" Edit Script / Command Step ")
-                        .border_style(Style::default().fg(Color::Yellow));
+                        .border_style(Style::default().fg(TN_WARNING));
 
                     let inner = block.inner(popup_area);
                     f.render_widget(block, popup_area);
@@ -743,8 +779,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .split(inner);
 
                     let styles = [
-                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
-                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 0 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 1 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
                     ];
 
                     let p_cmd = Paragraph::new(format!(" {}", command))
@@ -756,7 +792,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     f.render_widget(p_dir, chunks[1]);
 
                     let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
-                        .style(Style::default().fg(Color::DarkGray));
+                        .style(Style::default().fg(TN_INACTIVE));
                     f.render_widget(help, chunks[2]);
                 }
                 AppState::EditStepWait { ms, .. } => {
@@ -767,7 +803,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .title(" Edit Wait Step ")
-                                .border_style(Style::default().fg(Color::Yellow)),
+                                .border_style(Style::default().fg(TN_WARNING)),
                         );
                     f.render_widget(input_block, popup_area);
                 }
@@ -778,7 +814,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .title(" Edit Notification Step ")
-                        .border_style(Style::default().fg(Color::Yellow));
+                        .border_style(Style::default().fg(TN_WARNING));
 
                     let inner = block.inner(popup_area);
                     f.render_widget(block, popup_area);
@@ -789,8 +825,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .split(inner);
 
                     let styles = [
-                        if *active_field == 0 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
-                        if *active_field == 1 { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) },
+                        if *active_field == 0 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
+                        if *active_field == 1 { Style::default().fg(TN_SUCCESS).add_modifier(Modifier::BOLD) } else { Style::default().fg(TN_INACTIVE) },
                     ];
 
                     let p_title = Paragraph::new(format!(" {}", title))
@@ -802,7 +838,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     f.render_widget(p_body, chunks[1]);
 
                     let help = Paragraph::new("\n  Tab/Arrow: Switch Fields | Enter: Save | Esc: Cancel")
-                        .style(Style::default().fg(Color::DarkGray));
+                        .style(Style::default().fg(TN_INACTIVE));
                     f.render_widget(help, chunks[2]);
                 }
                 AppState::HealthCheckReport { reports, scroll_idx } => {
@@ -812,7 +848,7 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .title(" Workflow Health Check Results ")
-                        .border_style(Style::default().fg(Color::Cyan));
+                        .border_style(Style::default().fg(TN_ACTIVE));
 
                     let inner = block.inner(popup_area);
                     f.render_widget(block, popup_area);
@@ -836,13 +872,13 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         .split(inner);
 
                     let list = List::new(items)
-                        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+                        .highlight_style(Style::default().bg(TN_INACTIVE).fg(TN_TEXT))
                         .highlight_symbol("> ");
 
                     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
                     let footer = Paragraph::new("Press Enter or Esc to dismiss | Up/Down to scroll")
-                        .style(Style::default().fg(Color::DarkGray));
+                        .style(Style::default().fg(TN_INACTIVE));
                     f.render_widget(footer, chunks[1]);
                 }
                 AppState::Main => {}
@@ -998,12 +1034,41 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                                         if let Some(step) = current_steps.get(idx) {
                                             match step {
                                                 WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
+                                                    let active_monitors = crate::launcher::get_active_monitors();
+                                                    let mut monitor_list = vec!["None".to_string()];
+                                                    for m in active_monitors {
+                                                        if !monitor_list.contains(&m) {
+                                                            monitor_list.push(m);
+                                                        }
+                                                    }
+                                                    let mut monitor_idx = 0;
+                                                    let mut ws_true = String::new();
+                                                    let mut ws_false = String::new();
+                                                    if let Some(ref cond) = monitor_cond {
+                                                        if let Some(q_pos) = cond.find('?') {
+                                                            let m_name = cond[..q_pos].trim().to_string();
+                                                            let remainder = &cond[q_pos + 1..];
+                                                            if let Some(colon_pos) = remainder.find(':') {
+                                                                ws_true = remainder[..colon_pos].trim().to_string();
+                                                                ws_false = remainder[colon_pos + 1..].trim().to_string();
+                                                                if let Some(pos) = monitor_list.iter().position(|x| x == &m_name) {
+                                                                    monitor_idx = pos;
+                                                                } else {
+                                                                    monitor_list.push(m_name);
+                                                                    monitor_idx = monitor_list.len() - 1;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                     state = AppState::EditStepLaunch {
                                                         step_idx: idx,
                                                         desktop: desktop.clone(),
                                                         workspace: workspace.clone().unwrap_or_default(),
                                                         silent: silent.unwrap_or(false),
-                                                        monitor_cond: monitor_cond.clone().unwrap_or_default(),
+                                                        monitor_list,
+                                                        monitor_idx,
+                                                        ws_true,
+                                                        ws_false,
                                                         active_field: 0,
                                                     };
                                                 }
@@ -1411,24 +1476,49 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                         }
                         _ => {}
                     },
-                    AppState::EditStepLaunch { step_idx, desktop, workspace, silent, monitor_cond, active_field } => match key.code {
+                    AppState::EditStepLaunch {
+                        step_idx,
+                        desktop,
+                        workspace,
+                        silent,
+                        monitor_list,
+                        monitor_idx,
+                        ws_true,
+                        ws_false,
+                        active_field,
+                    } => match key.code {
                         KeyCode::Esc => {
                             state = AppState::Main;
                         }
                         KeyCode::Tab | KeyCode::Down => {
-                            *active_field = (*active_field + 1) % 4;
+                            *active_field = (*active_field + 1) % 6;
                         }
                         KeyCode::Up => {
-                            *active_field = (*active_field + 3) % 4;
+                            *active_field = (*active_field + 5) % 6;
                         }
-                        KeyCode::Char(' ') if *active_field == 3 => {
-                            *silent = !*silent;
+                        KeyCode::Char(' ') => {
+                            if *active_field == 2 {
+                                *monitor_idx = (*monitor_idx + 1) % monitor_list.len();
+                            } else if *active_field == 5 {
+                                *silent = !*silent;
+                            }
+                        }
+                        KeyCode::Right => {
+                            if *active_field == 2 {
+                                *monitor_idx = (*monitor_idx + 1) % monitor_list.len();
+                            }
+                        }
+                        KeyCode::Left => {
+                            if *active_field == 2 {
+                                *monitor_idx = (*monitor_idx + monitor_list.len() - 1) % monitor_list.len();
+                            }
                         }
                         KeyCode::Backspace => {
                             match active_field {
                                 0 => { desktop.pop(); }
                                 1 => { workspace.pop(); }
-                                2 => { monitor_cond.pop(); }
+                                3 => { ws_true.pop(); }
+                                4 => { ws_false.pop(); }
                                 _ => {}
                             }
                         }
@@ -1436,7 +1526,8 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             match active_field {
                                 0 => { desktop.push(c); }
                                 1 => { workspace.push(c); }
-                                2 => { monitor_cond.push(c); }
+                                3 => { ws_true.push(c); }
+                                4 => { ws_false.push(c); }
                                 _ => {}
                             }
                         }
@@ -1444,7 +1535,11 @@ fn run_event_loop<B: ratatui::backend::Backend>(
                             if let Some(w_name) = &selected_workflow_name {
                                 if let Some(wf) = config.workflows.get_mut(w_name) {
                                     let ws = if workspace.trim().is_empty() { None } else { Some(workspace.trim().to_string()) };
-                                    let mc = if monitor_cond.trim().is_empty() { None } else { Some(monitor_cond.trim().to_string()) };
+                                    let mc = if monitor_list[*monitor_idx] == "None" {
+                                        None
+                                    } else {
+                                        Some(format!("{}?{}:{}", monitor_list[*monitor_idx], ws_true.trim(), ws_false.trim()))
+                                    };
                                     wf.steps[*step_idx] = WorkflowStep::Launch {
                                         desktop: desktop.trim().to_string(),
                                         workspace: ws,
