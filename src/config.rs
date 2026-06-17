@@ -5,8 +5,18 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct StepCondition {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub if_battery: Option<bool>, // true = only on battery, false = only on AC
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub if_process_not_running: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub if_time: Option<String>, // e.g., "after 20:00", "before 08:00", "between 09:00-18:00"
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type")]
-pub enum WorkflowStep {
+pub enum StepType {
     #[serde(rename = "launch")]
     Launch {
         desktop: String,
@@ -16,12 +26,16 @@ pub enum WorkflowStep {
         silent: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         monitor_cond: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        terminal: Option<bool>,
     },
     #[serde(rename = "script")]
     RunScript {
         command: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        terminal: Option<bool>,
     },
     #[serde(rename = "wait")]
     Wait {
@@ -32,6 +46,18 @@ pub enum WorkflowStep {
         title: String,
         body: String,
     },
+    #[serde(rename = "dispatch")]
+    Dispatch {
+        command: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct WorkflowStep {
+    #[serde(flatten)]
+    pub step_type: StepType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<StepCondition>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -53,6 +79,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let mut workflows = HashMap::new();
+        
+        // 1. Default Setup
         workflows.insert(
             "default".to_string(),
             Workflow {
@@ -60,25 +88,37 @@ impl Default for Config {
                 description: Some("Default developer workstation startup".to_string()),
                 project_path: None,
                 steps: vec![
-                    WorkflowStep::Notify {
-                        title: "System Startup".to_string(),
-                        body: "Launching default developer workspace...".to_string(),
+                    WorkflowStep {
+                        step_type: StepType::Notify {
+                            title: "System Startup".to_string(),
+                            body: "Launching default developer workspace...".to_string(),
+                        },
+                        condition: None,
                     },
-                    WorkflowStep::Launch {
-                        desktop: "firefox.desktop".to_string(),
-                        workspace: Some("1".to_string()),
-                        silent: Some(false),
-                        monitor_cond: None,
+                    WorkflowStep {
+                        step_type: StepType::Launch {
+                            desktop: "firefox.desktop".to_string(),
+                            workspace: Some("1".to_string()),
+                            silent: Some(false),
+                            monitor_cond: None,
+                            terminal: None,
+                        },
+                        condition: None,
                     },
-                    WorkflowStep::Launch {
-                        desktop: "kitty.desktop".to_string(),
-                        workspace: Some("2".to_string()),
-                        silent: Some(true),
-                        monitor_cond: None,
+                    WorkflowStep {
+                        step_type: StepType::Launch {
+                            desktop: "kitty.desktop".to_string(),
+                            workspace: Some("2".to_string()),
+                            silent: Some(true),
+                            monitor_cond: None,
+                            terminal: None,
+                        },
+                        condition: None,
                     },
                 ],
             },
         );
+        
         Config {
             active_workflow: "default".to_string(),
             workflows,
@@ -130,11 +170,15 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
         let mut workflows = HashMap::new();
         for (profile_name, apps) in old_config.profiles {
             let steps = apps.into_iter().map(|app| {
-                WorkflowStep::Launch {
-                    desktop: app.desktop,
-                    workspace: app.workspace,
-                    silent: app.silent,
-                    monitor_cond: None,
+                WorkflowStep {
+                    step_type: StepType::Launch {
+                        desktop: app.desktop,
+                        workspace: app.workspace,
+                        silent: app.silent,
+                        monitor_cond: None,
+                        terminal: None,
+                    },
+                    condition: None,
                 }
             }).collect();
             workflows.insert(profile_name.clone(), Workflow {

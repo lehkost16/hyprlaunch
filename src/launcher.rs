@@ -1,8 +1,9 @@
-use crate::config::WorkflowStep;
+use crate::config::{WorkflowStep, StepType, StepCondition};
 use crate::desktop::{find_desktop_file, parse_desktop_file, parse_exec_line, DesktopEntry};
 use std::process::Command;
 use std::thread;
 use std::path::Path;
+use std::io::Read;
 
 pub fn is_app_running(entry: &DesktopEntry) -> bool {
     if entry.exec.is_empty() {
@@ -107,11 +108,34 @@ pub fn resolve_workspace(
     workspace.map(|w| w.to_string())
 }
 
+pub fn get_terminal_emulator() -> Option<String> {
+    if let Ok(term) = std::env::var("TERMINAL") {
+        if !term.is_empty() {
+            return Some(term);
+        }
+    }
+    let common_terms = ["kitty", "alacritty", "wezterm", "foot", "ghostty", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+    for term in &common_terms {
+        if Command::new("which")
+            .arg(term)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Some(term.to_string());
+        }
+    }
+    None
+}
+
 pub fn launch_step(
     desktop: &str,
     workspace: Option<&str>,
     silent: Option<bool>,
     monitor_cond: Option<&str>,
+    terminal_opt: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entry = if let Some(path) = find_desktop_file(desktop) {
         match parse_desktop_file(&path) {
@@ -130,6 +154,7 @@ pub fn launch_step(
             exec: exec_args,
             path: None,
             hidden: false,
+            terminal: false,
         }
     };
 
@@ -160,7 +185,20 @@ pub fn launch_step(
         command_parts_joined
     };
 
-    let escaped_lua_cmd = full_exec_cmd
+    let run_in_terminal = terminal_opt.unwrap_or(entry.terminal);
+
+    let final_exec_cmd = if run_in_terminal {
+        if let Some(ref term) = get_terminal_emulator() {
+            let escaped_full_exec = full_exec_cmd.replace('"', "\\\"");
+            format!("{} -e sh -c \"{}\"", term, escaped_full_exec)
+        } else {
+            full_exec_cmd
+        }
+    } else {
+        full_exec_cmd
+    };
+
+    let escaped_lua_cmd = final_exec_cmd
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
 
@@ -177,7 +215,11 @@ pub fn launch_step(
         format!("hl.dsp.exec_cmd(\"{}\")", escaped_lua_cmd)
     };
 
-    println!("Launching {}...", entry.name);
+    if run_in_terminal {
+        println!("Launching {} in terminal...", entry.name);
+    } else {
+        println!("Launching {}...", entry.name);
+    }
     Command::new("hyprctl")
         .args(["dispatch", &hypr_cmd])
         .stdout(std::process::Stdio::null())
@@ -187,9 +229,26 @@ pub fn launch_step(
     Ok(())
 }
 
-pub fn run_script_step(command: &str, dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_script_step(
+    command: &str,
+    dir: Option<&str>,
+    terminal_opt: Option<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let run_in_terminal = terminal_opt.unwrap_or(false);
+
+    let final_cmd = if run_in_terminal {
+        if let Some(ref term) = get_terminal_emulator() {
+            let escaped = command.replace('"', "\\\"");
+            format!("{} -e sh -c \"{}\"", term, escaped)
+        } else {
+            command.to_string()
+        }
+    } else {
+        command.to_string()
+    };
+
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command);
+    cmd.arg("-c").arg(&final_cmd);
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
@@ -213,31 +272,221 @@ pub fn notify_step(title: &str, body: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+pub fn dispatch_step(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Dispatching Hyprland command: {}...", cmd);
+    Command::new("hyprctl")
+        .args(["dispatch", cmd])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+pub fn is_on_battery() -> bool {
+    if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if name.starts_with("BAT") {
+                    let status_path = path.join("status");
+                    if let Ok(mut file) = std::fs::File::open(status_path) {
+                        let mut contents = String::new();
+                        if file.read_to_string(&mut contents).is_ok() {
+                            if contents.trim().eq_ignore_ascii_case("discharging") {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn is_process_running(name: &str) -> bool {
+    let status = Command::new("pgrep")
+        .arg("-x")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    status.map(|s| s.success()).unwrap_or(false)
+}
+
+pub fn get_local_time() -> Option<(u32, u32)> {
+    let output = Command::new("date")
+        .arg("+%H:%M")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = text.trim().split(':').collect();
+        if parts.len() == 2 {
+            let h = parts[0].parse::<u32>().ok()?;
+            let m = parts[1].parse::<u32>().ok()?;
+            return Some((h, m));
+        }
+    }
+    None
+}
+
+pub fn evaluate_time_condition(time_cond: &str) -> bool {
+    let (curr_h, curr_m) = match get_local_time() {
+        Some(t) => t,
+        None => return true, // Fallback if query fails
+    };
+    let curr_mins = curr_h * 60 + curr_m;
+    
+    let parse_time = |t_str: &str| -> Option<u32> {
+        let parts: Vec<&str> = t_str.trim().split(':').collect();
+        if parts.len() == 2 {
+            let h = parts[0].parse::<u32>().ok()?;
+            let m = parts[1].parse::<u32>().ok()?;
+            if h < 24 && m < 60 {
+                return Some(h * 60 + m);
+            }
+        }
+        None
+    };
+
+    let cond = time_cond.trim();
+    if cond.starts_with("after ") {
+        let t_str = &cond[6..];
+        if let Some(target_mins) = parse_time(t_str) {
+            return curr_mins >= target_mins;
+        }
+    } else if cond.starts_with("before ") {
+        let t_str = &cond[7..];
+        if let Some(target_mins) = parse_time(t_str) {
+            return curr_mins <= target_mins;
+        }
+    } else if cond.starts_with("between ") {
+        let range_str = &cond[8..];
+        let range_parts: Vec<&str> = range_str.split('-').collect();
+        if range_parts.len() == 2 {
+            if let (Some(start_mins), Some(end_mins)) = (parse_time(range_parts[0]), parse_time(range_parts[1])) {
+                if start_mins <= end_mins {
+                    return curr_mins >= start_mins && curr_mins <= end_mins;
+                } else {
+                    // Overnight range (e.g., between 22:00-06:00)
+                    return curr_mins >= start_mins || curr_mins <= end_mins;
+                }
+            }
+        }
+    }
+    
+    true // Malformed range executes by default
+}
+
+pub fn evaluate_step_condition(cond: &StepCondition) -> bool {
+    if let Some(on_battery) = cond.if_battery {
+        let is_bat = is_on_battery();
+        if is_bat != on_battery {
+            return false;
+        }
+    }
+    if let Some(ref proc_name) = cond.if_process_not_running {
+        if is_process_running(proc_name) {
+            return false;
+        }
+    }
+    if let Some(ref time_cond) = cond.if_time {
+        if !evaluate_time_condition(time_cond) {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error>> {
-    match step {
-        WorkflowStep::Launch { desktop, workspace, silent, monitor_cond } => {
-            launch_step(desktop, workspace.as_deref(), *silent, monitor_cond.as_deref())
+    if let Some(ref cond) = step.condition {
+        if !evaluate_step_condition(cond) {
+            println!("Skipping step (condition not met).");
+            return Ok(());
         }
-        WorkflowStep::RunScript { command, dir } => {
+    }
+
+    match &step.step_type {
+        StepType::Launch { desktop, workspace, silent, monitor_cond, terminal } => {
+            launch_step(desktop, workspace.as_deref(), *silent, monitor_cond.as_deref(), *terminal)
+        }
+        StepType::RunScript { command, dir, terminal } => {
             println!("Running custom command...");
-            run_script_step(command, dir.as_deref())
+            run_script_step(command, dir.as_deref(), *terminal)
         }
-        WorkflowStep::Wait { ms } => {
+        StepType::Wait { ms } => {
             println!("Waiting {}ms...", ms);
             wait_step(*ms);
             Ok(())
         }
-        WorkflowStep::Notify { title, body } => {
+        StepType::Notify { title, body } => {
             println!("Sending notification: \"{}\"...", title);
             notify_step(title, body)
+        }
+        StepType::Dispatch { command } => {
+            dispatch_step(command)
         }
     }
 }
 
-pub fn launch_workflow(steps: &[WorkflowStep]) -> Result<(), Box<dyn std::error::Error>> {
-    for step in steps {
+#[derive(Debug, Clone)]
+pub struct LaunchStatus {
+    pub workflow_name: String,
+    pub current_step: usize,
+    pub total_steps: usize,
+    pub step_description: String,
+}
+
+pub fn get_launch_status() -> &'static std::sync::Mutex<Option<LaunchStatus>> {
+    static STATUS: std::sync::OnceLock<std::sync::Mutex<Option<LaunchStatus>>> = std::sync::OnceLock::new();
+    STATUS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+pub fn launch_workflow(workflow_name: &str, steps: &[WorkflowStep]) -> Result<(), Box<dyn std::error::Error>> {
+    let total = steps.len();
+    for (idx, step) in steps.iter().enumerate() {
+        let desc = match &step.step_type {
+            StepType::Launch { desktop, .. } => format!("Launching {}", desktop),
+            StepType::RunScript { command, .. } => {
+                let cmd_short = if command.len() > 30 {
+                    format!("{}...", &command[..27])
+                } else {
+                    command.clone()
+                };
+                format!("Running script: {}", cmd_short)
+            }
+            StepType::Wait { ms } => format!("Waiting {}ms", ms),
+            StepType::Notify { title, .. } => format!("Notification: {}", title),
+            StepType::Dispatch { command } => {
+                let cmd_short = if command.len() > 30 {
+                    format!("{}...", &command[..27])
+                } else {
+                    command.clone()
+                };
+                format!("Dispatch: {}", cmd_short)
+            }
+        };
+
+        {
+            if let Ok(mut status) = get_launch_status().lock() {
+                *status = Some(LaunchStatus {
+                    workflow_name: workflow_name.to_string(),
+                    current_step: idx + 1,
+                    total_steps: total,
+                    step_description: desc,
+                });
+            }
+        }
+
         if let Err(e) = execute_step(step) {
             eprintln!("Error executing workflow step: {}", e);
+        }
+    }
+
+    {
+        if let Ok(mut status) = get_launch_status().lock() {
+            *status = None;
         }
     }
     Ok(())
@@ -276,4 +525,3 @@ mod tests {
         );
     }
 }
-

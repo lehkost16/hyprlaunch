@@ -13,6 +13,7 @@ pub struct DesktopEntry {
     pub exec: Vec<String>,
     pub path: Option<String>,
     pub hidden: bool,
+    pub terminal: bool,
 }
 
 pub fn get_desktop_search_paths() -> Vec<PathBuf> {
@@ -114,6 +115,7 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
     let mut path = None;
     let mut no_display = false;
     let mut hidden = false;
+    let mut terminal = false;
 
     let filename = file_path.file_name()?.to_string_lossy().into_owned();
 
@@ -148,6 +150,8 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
                     no_display = val.to_lowercase() == "true";
                 } else if key == "Hidden" {
                     hidden = val.to_lowercase() == "true";
+                } else if key == "Terminal" {
+                    terminal = val.to_lowercase() == "true";
                 }
             }
         }
@@ -166,6 +170,7 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
         exec: exec_args,
         path: path.filter(|s| !s.is_empty()),
         hidden: no_display || hidden,
+        terminal,
     })
 }
 
@@ -234,5 +239,25 @@ mod tests {
             parse_exec_line("cmd \\\"escaped\\\"").unwrap(),
             vec!["cmd".to_string(), "\"escaped\"".to_string()]
         );
+    }
+
+    #[test]
+    fn test_parse_desktop_file_terminal() {
+        use std::io::Write;
+        let dir = Path::new("target");
+        let file_path = dir.join("test_term.desktop");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "[Desktop Entry]").unwrap();
+        writeln!(file, "Name=Test App").unwrap();
+        writeln!(file, "Exec=btop").unwrap();
+        writeln!(file, "Terminal=true").unwrap();
+        drop(file);
+
+        let entry = parse_desktop_file(&file_path).unwrap();
+        assert_eq!(entry.name, "Test App");
+        assert_eq!(entry.exec, vec!["btop".to_string()]);
+        assert!(entry.terminal);
+
+        std::fs::remove_file(file_path).ok();
     }
 }

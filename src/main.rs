@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             let cfg = config::load_config()?;
             if let Some(wf) = cfg.workflows.get(&cfg.active_workflow) {
-                launcher::launch_workflow(&wf.steps)?;
+                launcher::launch_workflow(&cfg.active_workflow, &wf.steps)?;
             } else {
                 eprintln!("Active workflow '{}' not found in config.", cfg.active_workflow);
             }
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cfg = config::load_config()?;
                 if let Some(wf) = cfg.workflows.get(workflow_name) {
                     println!("Launching workflow: {}", workflow_name);
-                    launcher::launch_workflow(&wf.steps)?;
+                    launcher::launch_workflow(workflow_name, &wf.steps)?;
                 } else {
                     eprintln!("Workflow '{}' not found in config.", workflow_name);
                     std::process::exit(1);
