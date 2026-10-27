@@ -1,0 +1,22 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hyprlaunch
+Name[zh_CN]=Hyprlaunch 工作流编排
+GenericName=Workflow Orchestrator
+GenericName[zh_CN]=工作流编排器
+Comment=Configurable workflow orchestrator and profile launcher for Hyprland
+Comment[zh_CN]=Hyprland 桌面工作流编排与应用管理
+Exec=kitty --class hyprlaunch --title "Hyprlaunch" /home/nana/.cargo/bin/hyprlaunch tui
+TryExec=/home/nana/.cargo/bin/hyprlaunch
+Icon=hyprlaunch
+Terminal=false
+Categories=Utility;System;
+Keywords=hyprland;workflow;launcher;tui;orchestrator;
+StartupWMClass=hyprlaunch
+Actions=LaunchActive;
+
+[Desktop Action LaunchActive]
+Name=Run Active Workflow
+Name[zh_CN]=执行当前工作流
+Exec=/home/nana/.cargo/bin/hyprlaunch
