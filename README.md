@@ -2,22 +2,25 @@
 
 `hyprlaunch` is a terminal-based **Workflow Orchestrator** for the [Hyprland](https://hyprland.org/) window manager. It provides an interactive Terminal User Interface (TUI) to define, configure, and reorder structured sequences of steps ("workflows") that you want to execute together.
 
-Unlike state-restoring session managers, `hyprlaunch` lets you manually organize workspace mapping rules, custom shell scripts/commands, notification alerts, and delay sequences for your favorite environments (e.g., *Deep Coding*, *Content Creation*, *Meeting Prep*, or *Default* workspace setup) and launch them sequentially.
+Unlike state-restoring session managers, `hyprlaunch` lets you organize workspace mapping rules, scripts, notifications, and readiness checks into reusable workflows. Steps stay ordered by default, with optional parallel app launches for independent startup tasks.
 
 ---
 
 ## Features
 
 - **Interactive TUI Dashboard**: Keyboard-driven sidebar and editor panes to manage workflows and re-arrange execution order.
-- **Sequential Execution Pipeline**: Supports four distinct step types:
+- **Workflow Execution Pipeline**: Supports six step types and explicit ordering:
   1. **Launch App**: Starts a `.desktop` application or raw binary.
   2. **Run Script**: Executes shell commands and scripts in optional target directories.
   3. **Wait**: Halts execution for a specified duration in milliseconds.
-  4. **Notify**: Triggers a desktop notification to indicate progress or completions.
+  4. **Wait for Window**: Continues when a matching Hyprland window class appears, with a timeout.
+  5. **Notify**: Triggers a desktop notification to indicate progress or completions.
+  6. **Dispatch**: Sends a command to Hyprland.
+- **Parallel App Launch**: Consecutive app-launch steps can start together; other step types remain ordered barriers.
+- **Failure Policy**: Choose whether a workflow continues after a failed step or skips the remaining steps.
 - **Dynamic Monitor Workspace Conditions**: Target workspaces based on connected monitors using the `HDMI-A-1?3:1` syntax (e.g., if monitor `HDMI-A-1` is connected, place the window on workspace `3`, otherwise fall back to workspace `1`).
 - **Silent Launching**: Use the Hyprland `silent` execution flag to load applications in the background without stealing active window focus.
-- **Integrated Health Check Scanner**: Press `v` to audit workflows for missing desktop applications, invalid script paths, excessive wait delays, and empty notification headers.
-- **Automatic Legacy Migration**: Automatically upgrades old profile-based configurations (`~/.config/hyprlaunch/config.json`) to the workflows format on startup.
+- **Integrated Health Check Scanner**: Press `v` to audit workflows for missing desktop applications, invalid script paths, excessive wait delays, invalid window waits, and empty notification headers.
 
 ---
 
@@ -56,21 +59,25 @@ hyprlaunch tui
 - **Workflow Navigation (Left Pane)**:
   - `Up` / `Down` or `k` / `j`: Navigate workflows list.
   - `Space`: Set the selected workflow as the default active startup workflow (indicated by a `★`).
-  - `Enter`: Save and launch the selected workflow immediately (exits TUI).
+  - `Enter`: Save and run the selected workflow; progress and step results stay visible in the TUI.
   - `c`: Create a new workflow.
   - `r`: Rename the selected workflow.
   - `y`: Duplicate/Clone the selected workflow.
   - `d`: Delete the selected workflow.
   - `v`: Run health audit checks on the selected workflow steps.
+  - `p`: Toggle the selected workflow's failure policy between Continue and Stop.
   - `Tab` / `Right` / `l`: Switch pane to edit steps in the selected workflow.
   - `q` / `Esc`: Quit the application.
 - **Step Navigation & Editing (Right Pane)**:
   - `Tab` / `Left` / `h`: Switch back to the workflow list.
-  - `a`: Add a new step to the workflow (opens a selector popup for step types).
+  - `a`: Add a new step to the workflow (opens a selector; press `1`–`7` to choose a type directly).
+  - Application search accepts partial names and fuzzy character matches, ranked by relevance.
   - `e`: Edit all parameters of the selected step (opens a multi-field editor).
+  - `y`: Duplicate the selected step directly below it.
   - `d` / `Delete`: Remove the selected step.
   - `Enter`: Test launch / run only the selected step immediately in the background.
   - `Shift+Up` / `Shift+Down`: Move the selected step up or down in the startup sequence.
+  - In a Launch step editor, `Ctrl+P` toggles parallel launch. Adjacent Launch steps with this enabled start together.
 
 ---
 
@@ -110,6 +117,7 @@ Here is how your `config.json` might look:
   "workflows": {
     "coding": {
       "name": "coding",
+      "on_error": "continue",
       "steps": [
         {
           "type": "notify",
@@ -120,29 +128,34 @@ Here is how your `config.json` might look:
           "type": "launch",
           "desktop": "firefox.desktop",
           "workspace": "1",
-          "silent": false
-        },
-        {
-          "type": "script",
-          "command": "git pull",
-          "dir": "/home/user/projects/hyprlaunch"
-        },
-        {
-          "type": "wait",
-          "ms": 500
+          "silent": false,
+          "parallel": true
         },
         {
           "type": "launch",
           "desktop": "kitty.desktop",
           "workspace": "2",
           "silent": true,
-          "monitor_cond": "HDMI-A-1?3:2"
+          "monitor_cond": "HDMI-A-1?3:2",
+          "parallel": true
+        },
+        {
+          "type": "wait_window",
+          "class": "kitty",
+          "timeout_ms": 15000
+        },
+        {
+          "type": "script",
+          "command": "git pull",
+          "dir": "/home/user/projects/hyprlaunch"
         }
       ]
     }
   }
 }
 ```
+
+Every workflow must set `on_error`, and every launch step must set `parallel`. Set `on_error` to `"stop"` to skip subsequent steps after a failure, or `"continue"` to keep running them. Consecutive launch steps with `parallel: true` are dispatched concurrently; use `false` for sequential launches. If a parallel step fails under the Stop policy, its already-started peers finish before later steps are skipped. Use `wait_window` after launching an app when a later action depends on its window being ready, instead of guessing with a fixed delay. The loader reads only the current workflow schema; it does not migrate older profile-format files.
 
 ---
 

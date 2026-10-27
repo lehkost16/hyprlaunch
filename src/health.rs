@@ -126,6 +126,14 @@ pub fn validate_workflow_steps(steps: &[WorkflowStep]) -> Vec<String> {
                     ));
                 }
             }
+            StepType::WaitForWindow { class, timeout_ms } => {
+                if class.trim().is_empty() {
+                    reports.push(format!("Step {}: Wait for Window has an empty window class.", step_num));
+                }
+                if *timeout_ms == 0 {
+                    reports.push(format!("Step {}: Wait for Window timeout must be greater than zero.", step_num));
+                }
+            }
             StepType::Notify { title, body } => {
                 if title.trim().is_empty() && body.trim().is_empty() {
                     reports.push(format!(

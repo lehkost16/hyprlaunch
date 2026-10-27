@@ -1,8 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePolicy {
+    #[default]
+    Continue,
+    Stop,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct StepCondition {
@@ -28,6 +36,7 @@ pub enum StepType {
         monitor_cond: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         terminal: Option<bool>,
+        parallel: bool,
     },
     #[serde(rename = "script")]
     RunScript {
@@ -40,6 +49,11 @@ pub enum StepType {
     #[serde(rename = "wait")]
     Wait {
         ms: u64,
+    },
+    #[serde(rename = "wait_window")]
+    WaitForWindow {
+        class: String,
+        timeout_ms: u64,
     },
     #[serde(rename = "notify")]
     Notify {
@@ -67,6 +81,7 @@ pub struct Workflow {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    pub on_error: FailurePolicy,
     pub steps: Vec<WorkflowStep>,
 }
 
@@ -87,6 +102,7 @@ impl Default for Config {
                 name: "default".to_string(),
                 description: Some("Default developer workstation startup".to_string()),
                 project_path: None,
+                on_error: FailurePolicy::Continue,
                 steps: vec![
                     WorkflowStep {
                         step_type: StepType::Notify {
@@ -102,6 +118,7 @@ impl Default for Config {
                             silent: Some(false),
                             monitor_cond: None,
                             terminal: None,
+                            parallel: false,
                         },
                         condition: None,
                     },
@@ -112,6 +129,7 @@ impl Default for Config {
                             silent: Some(true),
                             monitor_cond: None,
                             terminal: None,
+                            parallel: false,
                         },
                         condition: None,
                     },
@@ -147,56 +165,7 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     
-    // 1. Try to parse as new Config format
-    if let Ok(config) = serde_json::from_str::<Config>(&contents) {
-        return Ok(config);
-    }
-    
-    // 2. Try to parse as old config format and migrate
-    #[derive(Deserialize)]
-    struct OldProfileApp {
-        desktop: String,
-        workspace: Option<String>,
-        silent: Option<bool>,
-    }
-    #[derive(Deserialize)]
-    struct OldConfig {
-        active_profile: String,
-        profiles: HashMap<String, Vec<OldProfileApp>>,
-    }
-    
-    if let Ok(old_config) = serde_json::from_str::<OldConfig>(&contents) {
-        println!("Migrating legacy hyprlaunch configuration to workflow orchestrator format...");
-        let mut workflows = HashMap::new();
-        for (profile_name, apps) in old_config.profiles {
-            let steps = apps.into_iter().map(|app| {
-                WorkflowStep {
-                    step_type: StepType::Launch {
-                        desktop: app.desktop,
-                        workspace: app.workspace,
-                        silent: app.silent,
-                        monitor_cond: None,
-                        terminal: None,
-                    },
-                    condition: None,
-                }
-            }).collect();
-            workflows.insert(profile_name.clone(), Workflow {
-                name: profile_name,
-                description: None,
-                project_path: None,
-                steps,
-            });
-        }
-        let migrated_config = Config {
-            active_workflow: old_config.active_profile,
-            workflows,
-        };
-        save_config(&migrated_config)?;
-        return Ok(migrated_config);
-    }
-    
-    Err("Failed to parse configuration file (invalid format)".into())
+    Ok(serde_json::from_str::<Config>(&contents)?)
 }
 
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -204,8 +173,40 @@ pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
     }
-    let mut file = File::create(path)?;
     let json = serde_json::to_string_pretty(config)?;
-    file.write_all(json.as_bytes())?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.json");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let temp_path = path.with_file_name(format!(".{}.{}.{}.tmp", file_name, std::process::id(), nonce));
+
+    let write_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = options.open(&temp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&temp_path, metadata.permissions())?;
+        }
+        std::fs::rename(&temp_path, &path)?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result?;
     Ok(())
 }

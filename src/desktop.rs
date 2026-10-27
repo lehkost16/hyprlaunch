@@ -14,6 +14,8 @@ pub struct DesktopEntry {
     pub path: Option<String>,
     pub hidden: bool,
     pub terminal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_wm_class: Option<String>,
 }
 
 pub fn get_desktop_search_paths() -> Vec<PathBuf> {
@@ -116,6 +118,7 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
     let mut no_display = false;
     let mut hidden = false;
     let mut terminal = false;
+    let mut startup_wm_class = None;
 
     let filename = file_path.file_name()?.to_string_lossy().into_owned();
 
@@ -152,6 +155,8 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
                     hidden = val.to_lowercase() == "true";
                 } else if key == "Terminal" {
                     terminal = val.to_lowercase() == "true";
+                } else if key == "StartupWMClass" {
+                    startup_wm_class = Some(val.to_string());
                 }
             }
         }
@@ -171,6 +176,7 @@ pub fn parse_desktop_file(file_path: &Path) -> Option<DesktopEntry> {
         path: path.filter(|s| !s.is_empty()),
         hidden: no_display || hidden,
         terminal,
+        startup_wm_class,
     })
 }
 

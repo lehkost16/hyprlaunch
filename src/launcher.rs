@@ -1,4 +1,32 @@
-use crate::config::{WorkflowStep, StepType, StepCondition};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static IS_TUI: AtomicBool = AtomicBool::new(false);
+
+pub fn set_is_tui(val: bool) {
+    IS_TUI.store(val, Ordering::Relaxed);
+}
+
+pub fn is_tui() -> bool {
+    IS_TUI.load(Ordering::Relaxed)
+}
+
+macro_rules! println {
+    ($($arg:tt)*) => {
+        if !crate::launcher::is_tui() {
+            std::println!($($arg)*);
+        }
+    };
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        if !crate::launcher::is_tui() {
+            std::eprintln!($($arg)*);
+        }
+    };
+}
+
+use crate::config::{FailurePolicy, WorkflowStep, StepType, StepCondition};
 use crate::desktop::{find_desktop_file, parse_desktop_file, parse_exec_line, DesktopEntry};
 use std::process::Command;
 use std::thread;
@@ -42,6 +70,122 @@ pub fn is_app_running(entry: &DesktopEntry) -> bool {
         .status();
 
     status.map(|s| s.success()).unwrap_or(false)
+}
+
+fn get_bin_name(exec: &[String]) -> Option<String> {
+    if exec.is_empty() { return None; }
+    for arg in exec {
+        let path = Path::new(arg);
+        if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
+            if basename == "env" || basename == "sh" || basename == "bash" || basename == "flatpak" {
+                continue;
+            }
+            if basename.starts_with('-') || basename.contains('=') {
+                continue;
+            }
+            return Some(basename.to_string());
+        }
+    }
+    Path::new(&exec[0]).file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+}
+
+pub fn find_matching_windows(entry: &DesktopEntry) -> Vec<String> {
+    let output = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output();
+    
+    let mut matching_addresses = Vec::new();
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json_str) = std::str::from_utf8(&out.stdout) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(arr) = value.as_array() {
+                        let wm_class = entry.startup_wm_class.as_deref().unwrap_or("").to_lowercase();
+                        let desktop_id = entry.filename.strip_suffix(".desktop")
+                            .unwrap_or(&entry.filename)
+                            .to_lowercase();
+                        
+                        let bin_name = get_bin_name(&entry.exec)
+                            .unwrap_or_default()
+                            .to_lowercase();
+                        
+                        for client in arr {
+                            let class = client.get("class")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            let initial_class = client.get("initialClass")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            
+                            let clean_class = class.split('.').last().unwrap_or(&class).to_lowercase();
+                            let clean_initial_class = initial_class.split('.').last().unwrap_or(&initial_class).to_lowercase();
+                            
+                            let is_match = (!wm_class.is_empty() && (class == wm_class || initial_class == wm_class))
+                                || (class == desktop_id || initial_class == desktop_id)
+                                || (!bin_name.is_empty() && (class == bin_name || initial_class == bin_name || clean_class == bin_name || clean_initial_class == bin_name));
+                            
+                            if is_match {
+                                if let Some(addr) = client.get("address").and_then(|v| v.as_str()) {
+                                    matching_addresses.push(addr.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    matching_addresses
+}
+
+fn is_terminal_app(entry: &DesktopEntry) -> bool {
+    if entry.terminal {
+        return true;
+    }
+    let bin_name = get_bin_name(&entry.exec)
+        .unwrap_or_default()
+        .to_lowercase();
+    let common_terms = ["kitty", "alacritty", "wezterm", "foot", "ghostty", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+    common_terms.contains(&bin_name.as_str())
+}
+
+pub fn get_active_workspace() -> String {
+    let output = Command::new("hyprctl")
+        .args(["activeworkspace", "-j"])
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json_str) = std::str::from_utf8(&out.stdout) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
+                        return id.to_string();
+                    }
+                    if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
+                        return name.to_string();
+                    }
+                }
+            }
+        }
+    }
+    
+    // Fallback: parse plain text output
+    let output = Command::new("hyprctl")
+        .arg("activeworkspace")
+        .output();
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if line.starts_with("workspace ID") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() > 2 {
+                    return parts[2].to_string();
+                }
+            }
+        }
+    }
+    "1".to_string() // Ultimate fallback
 }
 
 pub fn get_active_monitors() -> Vec<String> {
@@ -137,6 +281,9 @@ pub fn launch_step(
     monitor_cond: Option<&str>,
     terminal_opt: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let active_monitors = get_active_monitors();
+    let resolved_ws = resolve_workspace(workspace, monitor_cond, &active_monitors);
+
     let entry = if let Some(path) = find_desktop_file(desktop) {
         match parse_desktop_file(&path) {
             Some(e) => e,
@@ -155,12 +302,31 @@ pub fn launch_step(
             path: None,
             hidden: false,
             terminal: false,
+            startup_wm_class: None,
         }
     };
 
-    if is_app_running(&entry) {
-        println!("Application '{}' (from {}) is already running. Skipping launch.", entry.name, desktop);
-        return Ok(());
+    let matching_windows = find_matching_windows(&entry);
+    let app_was_running = !matching_windows.is_empty();
+
+    if app_was_running {
+        if !is_terminal_app(&entry) {
+            if let Some(ref ws) = resolved_ws {
+                println!("Application '{}' is already running. Moving its windows to workspace {} silently.", entry.name, ws);
+                for addr in matching_windows {
+                    let move_cmd = format!(
+                        "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
+                        ws, addr
+                    );
+                    let _ = Command::new("hyprctl")
+                        .args(["dispatch", &move_cmd])
+                        .status();
+                }
+            } else {
+                println!("Application '{}' is already running. No workspace configured, skipping.", entry.name);
+            }
+            return Ok(());
+        }
     }
 
     if entry.exec.is_empty() {
@@ -202,14 +368,22 @@ pub fn launch_step(
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
 
-    let active_monitors = get_active_monitors();
-    let resolved_ws = resolve_workspace(workspace, monitor_cond, &active_monitors);
 
-    let hypr_cmd = if let Some(ref ws) = resolved_ws {
-        let silent_flag = if silent.unwrap_or(false) { " silent" } else { "" };
+    let hypr_cmd = if resolved_ws.is_some() || silent.unwrap_or(false) {
+        let ws_str = resolved_ws.as_deref().unwrap_or("");
+        let silent_flag = if silent.unwrap_or(false) {
+            if ws_str.is_empty() { "silent" } else { " silent" }
+        } else {
+            ""
+        };
+        let rule_prefix = if ws_str.is_empty() {
+            "silent".to_string()
+        } else {
+            format!("workspace {}{}", ws_str, silent_flag)
+        };
         format!(
-            "hl.dsp.exec_cmd(\"{}\", {{ workspace = \"{}{}\" }})",
-            escaped_lua_cmd, ws, silent_flag
+            "hl.dsp.exec_cmd(\"[{}] {}\")",
+            rule_prefix, escaped_lua_cmd
         )
     } else {
         format!("hl.dsp.exec_cmd(\"{}\")", escaped_lua_cmd)
@@ -220,11 +394,47 @@ pub fn launch_step(
     } else {
         println!("Launching {}...", entry.name);
     }
-    Command::new("hyprctl")
+    println!("Debug: hyprctl dispatch {}", hypr_cmd);
+    let output = Command::new("hyprctl")
         .args(["dispatch", &hypr_cmd])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .output()?;
+    println!("Debug: hyprctl stdout: {}", String::from_utf8_lossy(&output.stdout));
+    println!("Debug: hyprctl stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    if let Some(ref ws) = resolved_ws {
+        let entry_clone = entry.clone();
+        let ws_clone = ws.clone();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let duration = std::time::Duration::from_secs(8);
+            let poll_interval = std::time::Duration::from_millis(150);
+            
+            // Record already existing window addresses to only move new windows
+            let mut existing_addresses = std::collections::HashSet::new();
+            for addr in find_matching_windows(&entry_clone) {
+                existing_addresses.insert(addr);
+            }
+            
+            while start.elapsed() < duration {
+                std::thread::sleep(poll_interval);
+                let current_windows = find_matching_windows(&entry_clone);
+                for addr in current_windows {
+                    if !existing_addresses.contains(&addr) {
+                        // Found a new window! Move it silently to the target workspace
+                        println!("Background monitor: moving new window {} silently to workspace {}", addr, ws_clone);
+                        let move_cmd = format!(
+                            "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
+                            ws_clone, addr
+                        );
+                        let _ = Command::new("hyprctl")
+                            .args(["dispatch", &move_cmd])
+                            .status();
+                        existing_addresses.insert(addr);
+                    }
+                }
+            }
+        });
+    }
 
     Ok(())
 }
@@ -407,8 +617,12 @@ pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error
         }
     }
 
+    execute_step_unchecked(step)
+}
+
+fn execute_step_unchecked(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error>> {
     match &step.step_type {
-        StepType::Launch { desktop, workspace, silent, monitor_cond, terminal } => {
+        StepType::Launch { desktop, workspace, silent, monitor_cond, terminal, .. } => {
             launch_step(desktop, workspace.as_deref(), *silent, monitor_cond.as_deref(), *terminal)
         }
         StepType::RunScript { command, dir, terminal } => {
@@ -420,6 +634,7 @@ pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error
             wait_step(*ms);
             Ok(())
         }
+        StepType::WaitForWindow { class, timeout_ms } => wait_for_window(class, *timeout_ms),
         StepType::Notify { title, body } => {
             println!("Sending notification: \"{}\"...", title);
             notify_step(title, body)
@@ -430,12 +645,65 @@ pub fn execute_step(step: &WorkflowStep) -> Result<(), Box<dyn std::error::Error
     }
 }
 
+fn wait_for_window(class: &str, timeout_ms: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let expected = class.trim();
+    if expected.is_empty() {
+        return Err("Window class cannot be empty".into());
+    }
+
+    println!("Waiting for window class '{}' (timeout {}ms)...", expected, timeout_ms);
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let started = std::time::Instant::now();
+    loop {
+        let output = Command::new("hyprctl").args(["clients", "-j"]).output()?;
+        if !output.status.success() {
+            return Err(format!("hyprctl clients failed: {}", String::from_utf8_lossy(&output.stderr).trim()).into());
+        }
+        let clients: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let found = clients.as_array().map_or(false, |clients| {
+            clients.iter().any(|client| {
+                ["class", "initialClass"].iter().any(|field| {
+                    client.get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .map_or(false, |value| value.eq_ignore_ascii_case(expected))
+                })
+            })
+        });
+        if found {
+            return Ok(());
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(format!("Timed out waiting for window class '{}' after {}ms", expected, timeout_ms).into());
+        }
+        thread::sleep(std::time::Duration::from_millis(200).min(timeout.saturating_sub(elapsed)));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchStatus {
     pub workflow_name: String,
     pub current_step: usize,
     pub total_steps: usize,
     pub step_description: String,
+    pub run_state: WorkflowRunState,
+    pub step_states: Vec<StepRunState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowRunState {
+    Running,
+    Completed,
+    CompletedWithErrors,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepRunState {
+    Pending,
+    Running,
+    Succeeded,
+    Skipped,
+    Failed(String),
 }
 
 pub fn get_launch_status() -> &'static std::sync::Mutex<Option<LaunchStatus>> {
@@ -443,53 +711,167 @@ pub fn get_launch_status() -> &'static std::sync::Mutex<Option<LaunchStatus>> {
     STATUS.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+pub fn is_workflow_running() -> bool {
+    get_launch_status()
+        .lock()
+        .ok()
+        .and_then(|status| status.as_ref().map(|s| s.run_state == WorkflowRunState::Running))
+        .unwrap_or(false)
+}
+
 pub fn launch_workflow(workflow_name: &str, steps: &[WorkflowStep]) -> Result<(), Box<dyn std::error::Error>> {
+    launch_workflow_with_policy(workflow_name, steps, FailurePolicy::Continue)
+}
+
+pub fn launch_workflow_with_policy(
+    workflow_name: &str,
+    steps: &[WorkflowStep],
+    on_error: FailurePolicy,
+) -> Result<(), Box<dyn std::error::Error>> {
     let total = steps.len();
-    for (idx, step) in steps.iter().enumerate() {
-        let desc = match &step.step_type {
-            StepType::Launch { desktop, .. } => format!("Launching {}", desktop),
-            StepType::RunScript { command, .. } => {
-                let cmd_short = if command.len() > 30 {
-                    format!("{}...", &command[..27])
-                } else {
-                    command.clone()
-                };
-                format!("Running script: {}", cmd_short)
+
+    {
+        let mut status = get_launch_status()
+            .lock()
+            .map_err(|_| "Workflow status lock is unavailable")?;
+        if status
+            .as_ref()
+            .map_or(false, |s| s.run_state == WorkflowRunState::Running)
+        {
+            return Err("A workflow is already running".into());
+        }
+        *status = Some(LaunchStatus {
+            workflow_name: workflow_name.to_string(),
+            current_step: 0,
+            total_steps: total,
+            step_description: "Preparing workflow".to_string(),
+            run_state: WorkflowRunState::Running,
+            step_states: vec![StepRunState::Pending; total],
+        });
+    }
+
+    let mut had_errors = false;
+    let mut idx = 0;
+    while idx < steps.len() {
+        let step = &steps[idx];
+        let is_parallel_launch = matches!(
+            &step.step_type,
+            StepType::Launch { parallel: true, .. }
+        );
+        let end = if is_parallel_launch {
+            let mut end = idx + 1;
+            while end < steps.len()
+                && matches!(&steps[end].step_type, StepType::Launch { parallel: true, .. })
+            {
+                end += 1;
             }
-            StepType::Wait { ms } => format!("Waiting {}ms", ms),
-            StepType::Notify { title, .. } => format!("Notification: {}", title),
-            StepType::Dispatch { command } => {
-                let cmd_short = if command.len() > 30 {
-                    format!("{}...", &command[..27])
-                } else {
-                    command.clone()
-                };
-                format!("Dispatch: {}", cmd_short)
-            }
+            end
+        } else {
+            idx + 1
         };
 
-        {
+        let group = &steps[idx..end];
+        let mut runnable = Vec::new();
+        for (offset, grouped_step) in group.iter().enumerate() {
+            let step_idx = idx + offset;
+            let condition_met = grouped_step.condition.as_ref().map(evaluate_step_condition).unwrap_or(true);
             if let Ok(mut status) = get_launch_status().lock() {
-                *status = Some(LaunchStatus {
-                    workflow_name: workflow_name.to_string(),
-                    current_step: idx + 1,
-                    total_steps: total,
-                    step_description: desc,
-                });
+                if let Some(status) = status.as_mut() {
+                    status.current_step = step_idx + 1;
+                    status.step_description = match &grouped_step.step_type {
+                        StepType::Launch { desktop, .. } if group.len() > 1 => format!("Launching {} (parallel group)", desktop),
+                        _ => desc_for_step(grouped_step),
+                    };
+                    status.step_states[step_idx] = if condition_met { StepRunState::Running } else { StepRunState::Skipped };
+                }
+            }
+            if condition_met {
+                runnable.push((step_idx, grouped_step));
             }
         }
 
-        if let Err(e) = execute_step(step) {
-            eprintln!("Error executing workflow step: {}", e);
+        if is_parallel_launch && runnable.len() > 1 {
+            let results = thread::scope(|scope| {
+                let handles: Vec<_> = runnable.iter().map(|(step_idx, grouped_step)| {
+                    let step_idx = *step_idx;
+                    let grouped_step = *grouped_step;
+                    (step_idx, scope.spawn(move || execute_step_unchecked(grouped_step).map_err(|error| error.to_string())))
+                }).collect();
+                handles.into_iter().map(|(step_idx, handle)| {
+                    let result = handle.join().unwrap_or_else(|_| Err("Step thread panicked".to_string()));
+                    (step_idx, result)
+                }).collect::<Vec<_>>()
+            });
+            for (step_idx, result) in results {
+                match result {
+                    Ok(()) => set_step_state(step_idx, StepRunState::Succeeded),
+                    Err(error) => {
+                        had_errors = true;
+                        eprintln!("Error executing workflow step: {}", error);
+                        set_step_state(step_idx, StepRunState::Failed(error));
+                    }
+                }
+            }
+        } else if let Some((step_idx, grouped_step)) = runnable.first() {
+            match execute_step_unchecked(grouped_step) {
+                Ok(()) => set_step_state(*step_idx, StepRunState::Succeeded),
+                Err(error) => {
+                    had_errors = true;
+                    eprintln!("Error executing workflow step: {}", error);
+                    set_step_state(*step_idx, StepRunState::Failed(error.to_string()));
+                }
+            }
+        }
+
+        idx = end;
+        if had_errors && on_error == FailurePolicy::Stop {
+            if let Ok(mut status) = get_launch_status().lock() {
+                if let Some(status) = status.as_mut() {
+                    for state in status.step_states.iter_mut().skip(idx) {
+                        *state = StepRunState::Skipped;
+                    }
+                }
+            }
+            break;
         }
     }
 
-    {
-        if let Ok(mut status) = get_launch_status().lock() {
-            *status = None;
+    if let Ok(mut status) = get_launch_status().lock() {
+        if let Some(status) = status.as_mut() {
+            status.current_step = total;
+            status.step_description = if had_errors {
+                "Workflow finished with errors".to_string()
+            } else {
+                "Workflow finished successfully".to_string()
+            };
+            status.run_state = if had_errors {
+                WorkflowRunState::CompletedWithErrors
+            } else {
+                WorkflowRunState::Completed
+            };
         }
     }
     Ok(())
+}
+
+fn desc_for_step(step: &WorkflowStep) -> String {
+    match &step.step_type {
+        StepType::Launch { desktop, .. } => format!("Launching {}", desktop),
+        StepType::RunScript { command, .. } => format!("Running script: {}", command.chars().take(30).collect::<String>()),
+        StepType::Wait { ms } => format!("Waiting {}ms", ms),
+        StepType::WaitForWindow { class, .. } => format!("Waiting for window: {}", class),
+        StepType::Notify { title, .. } => format!("Notification: {}", title),
+        StepType::Dispatch { command } => format!("Dispatch: {}", command.chars().take(30).collect::<String>()),
+    }
+}
+
+fn set_step_state(index: usize, state: StepRunState) {
+    if let Ok(mut status) = get_launch_status().lock() {
+        if let Some(status) = status.as_mut() {
+            status.current_step = index + 1;
+            status.step_states[index] = state;
+        }
+    }
 }
 
 #[cfg(test)]
