@@ -346,14 +346,11 @@ pub fn get_terminal_emulator() -> Option<String> {
 
 pub fn launch_step(
     desktop: &str,
-    workspace: Option<&str>,
+    _workspace: Option<&str>,
     silent: Option<bool>,
-    monitor_cond: Option<&str>,
+    _monitor_cond: Option<&str>,
     terminal_opt: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let active_monitors = get_active_monitors();
-    let resolved_ws = resolve_workspace(workspace, monitor_cond, &active_monitors);
-
     let entry = if let Some(path) = find_desktop_file(desktop) {
         match parse_desktop_file(&path) {
             Some(e) => e,
@@ -381,20 +378,7 @@ pub fn launch_step(
 
     if app_was_running {
         if !is_terminal_app(&entry) {
-            if let Some(ref ws) = resolved_ws {
-                println!("Application '{}' is already running. Moving its windows to workspace {} silently.", entry.name, ws);
-                for addr in matching_windows {
-                    let move_cmd = format!(
-                        "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
-                        ws, addr
-                    );
-                    let _ = hyprctl_cmd()
-                        .args(["dispatch", &move_cmd])
-                        .status();
-                }
-            } else {
-                println!("Application '{}' is already running. No workspace configured, skipping.", entry.name);
-            }
+            println!("Application '{}' is already running. Skipping.", entry.name);
             return Ok(());
         }
     }
@@ -439,22 +423,8 @@ pub fn launch_step(
         .replace('"', "\\\"");
 
 
-    let hypr_cmd = if resolved_ws.is_some() || silent.unwrap_or(false) {
-        let ws_str = resolved_ws.as_deref().unwrap_or("");
-        let silent_flag = if silent.unwrap_or(false) {
-            if ws_str.is_empty() { "silent" } else { " silent" }
-        } else {
-            ""
-        };
-        let rule_prefix = if ws_str.is_empty() {
-            "silent".to_string()
-        } else {
-            format!("workspace {}{}", ws_str, silent_flag)
-        };
-        format!(
-            "hl.dsp.exec_cmd(\"[{}] {}\")",
-            rule_prefix, escaped_lua_cmd
-        )
+    let hypr_cmd = if silent.unwrap_or(false) {
+        format!("hl.dsp.exec_cmd(\"[silent] {}\")", escaped_lua_cmd)
     } else {
         format!("hl.dsp.exec_cmd(\"{}\")", escaped_lua_cmd)
     };
@@ -470,102 +440,6 @@ pub fn launch_step(
         .output()?;
     println!("Debug: hyprctl stdout: {}", String::from_utf8_lossy(&output.stdout));
     println!("Debug: hyprctl stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-    if let Some(ref ws) = resolved_ws {
-        let entry_clone = entry.clone();
-        let ws_clone = ws.clone();
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            let duration = std::time::Duration::from_secs(8);
-            
-            // Record already existing window addresses to only move new windows
-            let mut existing_addresses = std::collections::HashSet::new();
-            for addr in find_matching_windows(&entry_clone) {
-                existing_addresses.insert(addr);
-            }
-
-            let wm_class = entry_clone.startup_wm_class.as_deref().unwrap_or("").to_lowercase();
-            let desktop_id = entry_clone.filename.strip_suffix(".desktop")
-                .unwrap_or(&entry_clone.filename)
-                .to_lowercase();
-            let bin_name = get_bin_name(&entry_clone.exec)
-                .unwrap_or_default()
-                .to_lowercase();
-
-            let matches_target = |class: &str, title: &str| -> bool {
-                let cl = class.to_lowercase();
-                let ti = title.to_lowercase();
-                (!wm_class.is_empty() && (cl == wm_class || ti.contains(&wm_class)))
-                    || (!desktop_id.is_empty() && (cl == desktop_id || ti.contains(&desktop_id)))
-                    || (!bin_name.is_empty() && (cl == bin_name || ti.contains(&bin_name)))
-            };
-
-            // Fast path: try native Socket2 event stream
-            if let Some(sock_path) = get_socket2_path() {
-                if let Ok(stream) = UnixStream::connect(&sock_path) {
-                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
-                    let mut reader = BufReader::new(stream);
-                    let mut line = String::new();
-
-                    while start.elapsed() < duration {
-                        line.clear();
-                        match reader.read_line(&mut line) {
-                            Ok(0) => break, // EOF
-                            Ok(_) => {
-                                let trimmed = line.trim();
-                                if trimmed.starts_with("openwindow>>") {
-                                    let payload = &trimmed["openwindow>>".len()..];
-                                    let parts: Vec<&str> = payload.split(',').collect();
-                                    if parts.len() >= 4 {
-                                        let addr = format!("0x{}", parts[0].trim_start_matches("0x"));
-                                        let class = parts[2];
-                                        let title = parts[3..].join(",");
-                                        if matches_target(class, &title) && !existing_addresses.contains(&addr) {
-                                            println!("Background Socket2: caught new window {} ({}) -> moving to workspace {}", addr, class, ws_clone);
-                                            let move_cmd = format!(
-                                                "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
-                                                ws_clone, addr
-                                            );
-                                            let _ = hyprctl_cmd()
-                                                .args(["dispatch", &move_cmd])
-                                                .status();
-                                            existing_addresses.insert(addr);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                                // Timeout tick, check loop duration
-                                continue;
-                            }
-                            Err(_) => break, // Fallback to polling
-                        }
-                    }
-                    return;
-                }
-            }
-
-            // Fallback path: polling if Socket2 was unavailable
-            let poll_interval = std::time::Duration::from_millis(150);
-            while start.elapsed() < duration {
-                std::thread::sleep(poll_interval);
-                let current_windows = find_matching_windows(&entry_clone);
-                for addr in current_windows {
-                    if !existing_addresses.contains(&addr) {
-                        println!("Background monitor: moving new window {} silently to workspace {}", addr, ws_clone);
-                        let move_cmd = format!(
-                            "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
-                            ws_clone, addr
-                        );
-                        let _ = hyprctl_cmd()
-                            .args(["dispatch", &move_cmd])
-                            .status();
-                        existing_addresses.insert(addr);
-                    }
-                }
-            }
-        });
-    }
 
     Ok(())
 }

@@ -9,18 +9,18 @@ Unlike state-restoring session managers, `hyprlaunch` lets you organize workspac
 ## Features
 
 - **Interactive TUI Dashboard**: Keyboard-driven sidebar and editor panes to manage workflows and re-arrange execution order.
-- **Workflow Execution Pipeline**: Supports six step types and explicit ordering:
-  1. **Launch App**: Starts a `.desktop` application or raw binary.
+- **Workflow Execution Pipeline**: Supports ordered, modular steps without stepping on window manager rules:
+  1. **Launch App**: Starts a `.desktop` application or raw binary (supports non-intrusive `silent` flags).
   2. **Run Script**: Executes shell commands and scripts in optional target directories.
-  3. **Wait**: Halts execution for a specified duration in milliseconds.
+  3. **Wait**: Halts execution for a specified duration in milliseconds (ideal for tray and system daemon settling).
   4. **Wait for Window**: Continues when a matching Hyprland window class appears, powered by low-latency Socket2 event streaming with automatic fallback.
   5. **Notify**: Triggers a desktop notification to indicate progress or completions.
-  6. **Dispatch**: Sends a command to Hyprland.
+  6. **Dispatch**: Sends a command directly to Hyprland.
+- **Strict Separation of Concerns (Orthogonal Design)**: Unlike bloated session managers that try to force window positioning, `hyprlaunch` lets Hyprland manage windows (`window_rules.lua`), while focusing purely on declarative process lifecycle and orchestration timing.
 - **Fail-safe Instance Detection**: Automatically detects and connects to the active Hyprland instance signature even when launched from headless/systemd user sessions.
 - **Parallel App Launch**: Consecutive app-launch steps can start together; other step types remain ordered barriers.
+- **Silent Launch & Background Integration**: Seamlessly launch background tools or tray apps without stealing focus or interrupting current workspace flow.
 - **Failure Policy**: Choose whether a workflow continues after a failed step or skips the remaining steps.
-- **Dynamic Monitor Workspace Conditions**: Target workspaces based on connected monitors using the `HDMI-A-1?3:1` syntax (e.g., if monitor `HDMI-A-1` is connected, place the window on workspace `3`, otherwise fall back to workspace `1`).
-- **Silent Launching**: Use the Hyprland `silent` execution flag to load applications in the background without stealing active window focus.
 - **Integrated Health Check Scanner**: Press `v` to audit workflows for missing desktop applications, invalid script paths, excessive wait delays, invalid window waits, and empty notification headers.
 
 ---

@@ -28,11 +28,11 @@ pub enum StepType {
     #[serde(rename = "launch")]
     Launch {
         desktop: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         silent: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         monitor_cond: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         terminal: Option<bool>,
