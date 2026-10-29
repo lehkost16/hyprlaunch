@@ -30,8 +30,78 @@ use crate::config::{FailurePolicy, WorkflowStep, StepType, StepCondition};
 use crate::desktop::{find_desktop_file, parse_desktop_file, parse_exec_line, DesktopEntry};
 use std::process::Command;
 use std::thread;
-use std::path::Path;
-use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::net::UnixStream;
+
+pub fn hyprctl_cmd() -> Command {
+    let mut cmd = Command::new("hyprctl");
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
+            let hypr_dir = Path::new(&xdg_runtime).join("hypr");
+            if let Ok(entries) = std::fs::read_dir(&hypr_dir) {
+                let mut best_sig: Option<(std::time::SystemTime, String)> = None;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let socket_path = path.join(".socket.sock");
+                        if socket_path.exists() {
+                            if let Ok(meta) = std::fs::metadata(&socket_path) {
+                                if let Ok(mtime) = meta.modified() {
+                                    if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                                        if best_sig.as_ref().map_or(true, |(best_time, _)| mtime > *best_time) {
+                                            best_sig = Some((mtime, file_name.to_string()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((_, sig)) = best_sig {
+                    cmd.env("HYPRLAND_INSTANCE_SIGNATURE", sig);
+                }
+            }
+        }
+    }
+    cmd
+}
+
+pub fn get_socket2_path() -> Option<PathBuf> {
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    let hypr_dir = Path::new(&xdg_runtime).join("hypr");
+
+    if let Ok(sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        let sock = hypr_dir.join(&sig).join(".socket2.sock");
+        if sock.exists() {
+            return Some(sock);
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&hypr_dir) {
+        let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let sock = p.join(".socket2.sock");
+                if sock.exists() {
+                    if let Ok(meta) = std::fs::metadata(&sock) {
+                        if let Ok(mtime) = meta.modified() {
+                            if best.as_ref().map_or(true, |(best_time, _)| mtime > *best_time) {
+                                best = Some((mtime, sock));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, sock)) = best {
+            return Some(sock);
+        }
+    }
+
+    None
+}
 
 pub fn is_app_running(entry: &DesktopEntry) -> bool {
     if entry.exec.is_empty() {
@@ -90,7 +160,7 @@ fn get_bin_name(exec: &[String]) -> Option<String> {
 }
 
 pub fn find_matching_windows(entry: &DesktopEntry) -> Vec<String> {
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .args(["clients", "-j"])
         .output();
     
@@ -152,7 +222,7 @@ fn is_terminal_app(entry: &DesktopEntry) -> bool {
 }
 
 pub fn get_active_workspace() -> String {
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .args(["activeworkspace", "-j"])
         .output();
     if let Ok(out) = output {
@@ -171,7 +241,7 @@ pub fn get_active_workspace() -> String {
     }
     
     // Fallback: parse plain text output
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .arg("activeworkspace")
         .output();
     if let Ok(out) = output {
@@ -190,7 +260,7 @@ pub fn get_active_workspace() -> String {
 
 pub fn get_active_monitors() -> Vec<String> {
     // Try to parse using hyprctl monitors -j
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .args(["monitors", "-j"])
         .output();
     
@@ -209,7 +279,7 @@ pub fn get_active_monitors() -> Vec<String> {
     }
     
     // Fallback: parse plain text output of hyprctl monitors
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .arg("monitors")
         .output();
     
@@ -318,7 +388,7 @@ pub fn launch_step(
                         "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
                         ws, addr
                     );
-                    let _ = Command::new("hyprctl")
+                    let _ = hyprctl_cmd()
                         .args(["dispatch", &move_cmd])
                         .status();
                 }
@@ -395,7 +465,7 @@ pub fn launch_step(
         println!("Launching {}...", entry.name);
     }
     println!("Debug: hyprctl dispatch {}", hypr_cmd);
-    let output = Command::new("hyprctl")
+    let output = hyprctl_cmd()
         .args(["dispatch", &hypr_cmd])
         .output()?;
     println!("Debug: hyprctl stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -407,26 +477,87 @@ pub fn launch_step(
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
             let duration = std::time::Duration::from_secs(8);
-            let poll_interval = std::time::Duration::from_millis(150);
             
             // Record already existing window addresses to only move new windows
             let mut existing_addresses = std::collections::HashSet::new();
             for addr in find_matching_windows(&entry_clone) {
                 existing_addresses.insert(addr);
             }
-            
+
+            let wm_class = entry_clone.startup_wm_class.as_deref().unwrap_or("").to_lowercase();
+            let desktop_id = entry_clone.filename.strip_suffix(".desktop")
+                .unwrap_or(&entry_clone.filename)
+                .to_lowercase();
+            let bin_name = get_bin_name(&entry_clone.exec)
+                .unwrap_or_default()
+                .to_lowercase();
+
+            let matches_target = |class: &str, title: &str| -> bool {
+                let cl = class.to_lowercase();
+                let ti = title.to_lowercase();
+                (!wm_class.is_empty() && (cl == wm_class || ti.contains(&wm_class)))
+                    || (!desktop_id.is_empty() && (cl == desktop_id || ti.contains(&desktop_id)))
+                    || (!bin_name.is_empty() && (cl == bin_name || ti.contains(&bin_name)))
+            };
+
+            // Fast path: try native Socket2 event stream
+            if let Some(sock_path) = get_socket2_path() {
+                if let Ok(stream) = UnixStream::connect(&sock_path) {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+
+                    while start.elapsed() < duration {
+                        line.clear();
+                        match reader.read_line(&mut line) {
+                            Ok(0) => break, // EOF
+                            Ok(_) => {
+                                let trimmed = line.trim();
+                                if trimmed.starts_with("openwindow>>") {
+                                    let payload = &trimmed["openwindow>>".len()..];
+                                    let parts: Vec<&str> = payload.split(',').collect();
+                                    if parts.len() >= 4 {
+                                        let addr = format!("0x{}", parts[0].trim_start_matches("0x"));
+                                        let class = parts[2];
+                                        let title = parts[3..].join(",");
+                                        if matches_target(class, &title) && !existing_addresses.contains(&addr) {
+                                            println!("Background Socket2: caught new window {} ({}) -> moving to workspace {}", addr, class, ws_clone);
+                                            let move_cmd = format!(
+                                                "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
+                                                ws_clone, addr
+                                            );
+                                            let _ = hyprctl_cmd()
+                                                .args(["dispatch", &move_cmd])
+                                                .status();
+                                            existing_addresses.insert(addr);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                                // Timeout tick, check loop duration
+                                continue;
+                            }
+                            Err(_) => break, // Fallback to polling
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // Fallback path: polling if Socket2 was unavailable
+            let poll_interval = std::time::Duration::from_millis(150);
             while start.elapsed() < duration {
                 std::thread::sleep(poll_interval);
                 let current_windows = find_matching_windows(&entry_clone);
                 for addr in current_windows {
                     if !existing_addresses.contains(&addr) {
-                        // Found a new window! Move it silently to the target workspace
                         println!("Background monitor: moving new window {} silently to workspace {}", addr, ws_clone);
                         let move_cmd = format!(
                             "hl.dsp.window.move({{ workspace = \"{}\", follow = false, window = \"address:{}\" }})",
                             ws_clone, addr
                         );
-                        let _ = Command::new("hyprctl")
+                        let _ = hyprctl_cmd()
                             .args(["dispatch", &move_cmd])
                             .status();
                         existing_addresses.insert(addr);
@@ -484,7 +615,7 @@ pub fn notify_step(title: &str, body: &str) -> Result<(), Box<dyn std::error::Er
 
 pub fn dispatch_step(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Dispatching Hyprland command: {}...", cmd);
-    Command::new("hyprctl")
+    hyprctl_cmd()
         .args(["dispatch", cmd])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -654,29 +785,77 @@ fn wait_for_window(class: &str, timeout_ms: u64) -> Result<(), Box<dyn std::erro
     println!("Waiting for window class '{}' (timeout {}ms)...", expected, timeout_ms);
     let timeout = std::time::Duration::from_millis(timeout_ms);
     let started = std::time::Instant::now();
-    loop {
-        let output = Command::new("hyprctl").args(["clients", "-j"]).output()?;
-        if !output.status.success() {
-            return Err(format!("hyprctl clients failed: {}", String::from_utf8_lossy(&output.stderr).trim()).into());
+
+    // Fast check: is the window already present?
+    let check_existing = || -> bool {
+        if let Ok(output) = hyprctl_cmd().args(["clients", "-j"]).output() {
+            if output.status.success() {
+                if let Ok(clients) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                    if let Some(arr) = clients.as_array() {
+                        return arr.iter().any(|client| {
+                            ["class", "initialClass"].iter().any(|field| {
+                                client.get(field)
+                                    .and_then(serde_json::Value::as_str)
+                                    .map_or(false, |value| value.eq_ignore_ascii_case(expected))
+                            })
+                        });
+                    }
+                }
+            }
         }
-        let clients: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        let found = clients.as_array().map_or(false, |clients| {
-            clients.iter().any(|client| {
-                ["class", "initialClass"].iter().any(|field| {
-                    client.get(field)
-                        .and_then(serde_json::Value::as_str)
-                        .map_or(false, |value| value.eq_ignore_ascii_case(expected))
-                })
-            })
-        });
-        if found {
+        false
+    };
+
+    if check_existing() {
+        return Ok(());
+    }
+
+    // Event-driven path: listen on Socket2
+    if let Some(sock_path) = get_socket2_path() {
+        if let Ok(stream) = UnixStream::connect(&sock_path) {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+
+            while started.elapsed() < timeout {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("openwindow>>") {
+                            let payload = &trimmed["openwindow>>".len()..];
+                            let parts: Vec<&str> = payload.split(',').collect();
+                            if parts.len() >= 3 {
+                                let window_class = parts[2];
+                                if window_class.eq_ignore_ascii_case(expected) {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                        continue;
+                    }
+                    Err(_) => break, // Fallback
+                }
+            }
+            if started.elapsed() >= timeout {
+                return Err(format!("Timed out waiting for window class '{}' after {}ms", expected, timeout_ms).into());
+            }
+        }
+    }
+
+    // Fallback polling loop
+    loop {
+        if check_existing() {
             return Ok(());
         }
         let elapsed = started.elapsed();
         if elapsed >= timeout {
             return Err(format!("Timed out waiting for window class '{}' after {}ms", expected, timeout_ms).into());
         }
-        thread::sleep(std::time::Duration::from_millis(200).min(timeout.saturating_sub(elapsed)));
+        thread::sleep(std::time::Duration::from_millis(150).min(timeout.saturating_sub(elapsed)));
     }
 }
 

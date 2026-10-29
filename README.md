@@ -13,9 +13,10 @@ Unlike state-restoring session managers, `hyprlaunch` lets you organize workspac
   1. **Launch App**: Starts a `.desktop` application or raw binary.
   2. **Run Script**: Executes shell commands and scripts in optional target directories.
   3. **Wait**: Halts execution for a specified duration in milliseconds.
-  4. **Wait for Window**: Continues when a matching Hyprland window class appears, with a timeout.
+  4. **Wait for Window**: Continues when a matching Hyprland window class appears, powered by low-latency Socket2 event streaming with automatic fallback.
   5. **Notify**: Triggers a desktop notification to indicate progress or completions.
   6. **Dispatch**: Sends a command to Hyprland.
+- **Fail-safe Instance Detection**: Automatically detects and connects to the active Hyprland instance signature even when launched from headless/systemd user sessions.
 - **Parallel App Launch**: Consecutive app-launch steps can start together; other step types remain ordered barriers.
 - **Failure Policy**: Choose whether a workflow continues after a failed step or skips the remaining steps.
 - **Dynamic Monitor Workspace Conditions**: Target workspaces based on connected monitors using the `HDMI-A-1?3:1` syntax (e.g., if monitor `HDMI-A-1` is connected, place the window on workspace `3`, otherwise fall back to workspace `1`).

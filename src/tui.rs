@@ -221,7 +221,7 @@ fn get_preset_workflow(preset_name: &str) -> Option<Workflow> {
                 },
                 WorkflowStep {
                     step_type: StepType::RunScript {
-                        command: "hyprctl keyword decoration:drop_shadow false".to_string(),
+                        command: "hyprctl keyword decoration:shadow:enabled false".to_string(),
                         dir: None,
                         terminal: None,
                     },
