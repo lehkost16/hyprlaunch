@@ -29,6 +29,15 @@ Unlike state-restoring session managers, `hyprlaunch` lets you organize workspac
 ### Prerequisites
 Make sure you have Rust and Cargo installed. You also need to be running a Hyprland session to dispatch the launches.
 
+### Pre-built Binary
+Download the pre-compiled `hyprlaunch-linux-x86_64.tar.gz` from the [Latest GitHub Release](https://github.com/lehkost16/hyprlaunch/releases/latest), unpack it, and place it in your `PATH`:
+
+```bash
+tar -xzf hyprlaunch-linux-x86_64.tar.gz
+chmod +x hyprlaunch
+mv hyprlaunch ~/.local/bin/
+```
+
 ### Build from Source
 Clone the repository and build the binary:
 ```bash
@@ -165,6 +174,12 @@ To automatically launch your active workflow when you log into Hyprland, add the
 
 ```ini
 exec-once = hyprlaunch
+```
+
+If you are using the modern Hyprland Lua configuration format (`hyprland.lua` / `startup.lua`), call it via `hl.exec_cmd`:
+
+```lua
+hl.exec_cmd("hyprlaunch")
 ```
 
 You can also create keybindings to easily switch workflows:
