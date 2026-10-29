@@ -170,15 +170,23 @@ Every workflow must set `on_error`, and every launch step must set `parallel`. S
 
 ## Integration with Hyprland
 
-To automatically launch your active workflow when you log into Hyprland, add the following line to your `~/.config/hypr/hyprland.conf`:
+To automatically launch a specific workflow (or your active default workflow) when you log into Hyprland:
 
+### Hyprland Classic Config (`hyprland.conf`)
 ```ini
+# Launch a specific workflow (e.g., "default", "coding", "Nor")
+exec-once = hyprlaunch <workflow_name>
+
+# Or launch the currently active workflow (marked with ★ in TUI)
 exec-once = hyprlaunch
 ```
 
-If you are using the modern Hyprland Lua configuration format (`hyprland.lua` / `startup.lua`), call it via `hl.exec_cmd`:
-
+### Modern Hyprland Lua Config (`hyprland.lua` / `startup.lua`)
 ```lua
+-- Launch a specific workflow
+hl.exec_cmd("hyprlaunch <workflow_name>")
+
+-- Or launch the active workflow
 hl.exec_cmd("hyprlaunch")
 ```
 
